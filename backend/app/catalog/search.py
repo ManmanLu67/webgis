@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Collection, Item, Provider
+from app.spatial import intersects
 
 
 class SearchError(ValueError):
@@ -59,13 +60,9 @@ def search_items(
         .where(Provider.enabled.is_(True))
     )
     if bbox is not None:
-        minx, miny, maxx, maxy = bbox
-        statement = statement.where(
-            Item.maxx >= minx,
-            Item.minx <= maxx,
-            Item.maxy >= miny,
-            Item.miny <= maxy,
-        )
+        # 空间过滤交给 app.spatial：有没有 PostGIS 是存储层的事，
+        # 这个模块不该出现任何 PostGIS 字样。
+        statement = statement.where(intersects(Item, bbox, session.get_bind()))
     if datetime_range is not None:
         start, end = datetime_range
         if start is not None:

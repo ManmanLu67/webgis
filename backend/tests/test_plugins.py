@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from app.config import Settings
-from app.main import create_app
 from app.plugins.loader import load_plugins
 from fastapi.testclient import TestClient
 
@@ -42,8 +40,8 @@ entrypoint: provider:Stub
 """
 
 
-def test_missing_field_does_not_block_other_plugins(tmp_path):
-    plugins = tmp_path / "plugins"
+def test_missing_field_does_not_block_other_plugins(tmp_path, build_app):
+    plugins = tmp_path / "custom-plugins"
     plugins.mkdir()
     _write_plugin(plugins, "good", VALID.format(name="good"))
     broken = plugins / "bad"
@@ -53,8 +51,7 @@ def test_missing_field_does_not_block_other_plugins(tmp_path):
     assert [item.manifest["id"] for item in report.loaded] == ["good"]
     assert any("missing field: name" in error for error in report.errors)
 
-    app = create_app(Settings(database_url=f"sqlite:///{tmp_path / 'c.db'}", plugins_dir=plugins))
-    client = TestClient(app)
+    client = TestClient(build_app(plugins_dir=plugins))
     ids = [row["id"] for row in client.get("/providers").json()]
     assert ids == ["good"]
     assert any("missing field: name" in error for error in client.get("/providers/errors").json())

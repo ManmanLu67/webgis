@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from app.config import Settings
+
+from conftest import migrate
 
 ROOT = Path(__file__).resolve().parents[2]
 CADDYFILE = ROOT / "gateway" / "Caddyfile"
@@ -30,17 +33,18 @@ def app_routes() -> set[str]:
     取（它已经算好了 include 前缀），再补上 FastAPI 自带的文档路由。
     """
     pytest.importorskip("titiler.core", reason="需要切片服务才能看到 /cog 路由")
-    from app.config import Settings
     from app.main import create_app
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        plugins = Path(tmp) / "plugins"
+        root = Path(tmp)
+        plugins = root / "plugins"
         plugins.mkdir()
+        migrate(f"sqlite:///{root / 'catalog.db'}")
         app = create_app(
             Settings(
-                database_url=f"sqlite:///{Path(tmp) / 'c.db'}",
+                database_url=f"sqlite:///{root / 'catalog.db'}",
                 plugins_dir=plugins,
-                data_dir=Path(tmp) / "data",
+                data_dir=root / "data",
             )
         )
         routes = set(app.openapi()["paths"])

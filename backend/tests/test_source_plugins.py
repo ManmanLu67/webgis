@@ -3,8 +3,6 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from app.config import Settings
-from app.main import create_app
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,10 +120,8 @@ def test_skeleton_search_explains_itself():
         raise AssertionError("骨架插件应当拒绝查询")
 
 
-def test_installed_plugins_expose_status_without_naming_them_in_the_catalog(tmp_path):
-    plugins = ROOT / "plugins"
-    app = create_app(Settings(database_url=f"sqlite:///{tmp_path / 'catalog.db'}", plugins_dir=plugins))
-    client = TestClient(app)
+def test_installed_plugins_expose_status_without_naming_them_in_the_catalog(build_app):
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
     rows = {row["id"]: row["availability"] for row in client.get("/providers").json()}
     assert rows["public_stac"] == "ready"
     assert rows["arcgis_wayback"] == "ready"

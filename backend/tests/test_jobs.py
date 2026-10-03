@@ -1,24 +1,13 @@
 from datetime import UTC, datetime
 
-from app.config import Settings
 from app.ingest.converter import CopyConverter
 from app.ingest.worker import recover_interrupted, run_once
-from app.main import create_app
 from app.models import Item, Job
 from fastapi.testclient import TestClient
 
 
-def _app(tmp_path):
-    plugins = tmp_path / "plugins"
-    plugins.mkdir()
-    app = create_app(
-        Settings(
-            database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
-            plugins_dir=plugins,
-            data_dir=tmp_path / "data",
-            worker_enabled=False,
-        )
-    )
+def _app(build_app):
+    app = build_app(worker_enabled=False)
     app.state.converter = CopyConverter()
     return app
 
@@ -31,8 +20,8 @@ def _upload(client: TestClient, name: str, when: str, body: bytes = b"not-really
     )
 
 
-def test_upload_queues_then_succeeds_with_layer(tmp_path):
-    app = _app(tmp_path)
+def test_upload_queues_then_succeeds_with_layer(build_app):
+    app = _app(build_app)
     client = TestClient(app)
     created = _upload(client, "scene.tif", "2020-06-01T00:00:00Z")
     assert created.status_code == 202
@@ -51,8 +40,8 @@ def test_upload_queues_then_succeeds_with_layer(tmp_path):
         session.close()
 
 
-def test_second_run_does_not_claim_the_same_job(tmp_path):
-    app = _app(tmp_path)
+def test_second_run_does_not_claim_the_same_job(build_app):
+    app = _app(build_app)
     client = TestClient(app)
     _upload(client, "scene.tif", "2020-06-01T00:00:00Z")
     session = app.state.session_factory()
@@ -65,8 +54,8 @@ def test_second_run_does_not_claim_the_same_job(tmp_path):
         session.close()
 
 
-def test_interrupted_job_fails_without_an_item(tmp_path):
-    app = _app(tmp_path)
+def test_interrupted_job_fails_without_an_item(build_app):
+    app = _app(build_app)
     session = app.state.session_factory()
     now = datetime.now(UTC)
     session.add(
@@ -90,8 +79,8 @@ def test_interrupted_job_fails_without_an_item(tmp_path):
     session.close()
 
 
-def test_non_image_fails_without_item(tmp_path):
-    app = _app(tmp_path)
+def test_non_image_fails_without_item(build_app):
+    app = _app(build_app)
     client = TestClient(app)
     created = _upload(client, "notes.txt", "2020-06-01T00:00:00Z", b"hello")
     session = app.state.session_factory()
@@ -104,8 +93,8 @@ def test_non_image_fails_without_item(tmp_path):
         session.close()
 
 
-def test_times_stay_distinct(tmp_path):
-    app = _app(tmp_path)
+def test_times_stay_distinct(build_app):
+    app = _app(build_app)
     client = TestClient(app)
     _upload(client, "a.tif", "2020-01-01T00:00:00Z")
     _upload(client, "b.tif", "2021-01-01T00:00:00Z")
@@ -123,8 +112,8 @@ def test_times_stay_distinct(tmp_path):
     assert len(response.json()["features"]) == 1
 
 
-def test_tile_timing_does_not_claim_a_cache_hit(tmp_path):
-    app = _app(tmp_path)
+def test_tile_timing_does_not_claim_a_cache_hit(build_app):
+    app = _app(build_app)
     client = TestClient(app)
     body = client.get("/tiles/timing").json()
     assert "duration_ms" in body

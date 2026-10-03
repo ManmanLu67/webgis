@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from app.config import Settings
-from app.main import create_app
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,14 +31,8 @@ FIELDS = {
 }
 
 
-def test_reference_and_ingest_share_layer_shape(tmp_path):
-    app = create_app(
-        Settings(
-            database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
-            plugins_dir=ROOT / "plugins",
-        )
-    )
-    client = TestClient(app)
+def test_reference_and_ingest_share_layer_shape(build_app):
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
     reference = client.get("/items/ref-clear/layer").json()
     ingest = client.get("/items/ing-1/layer").json()
     assert set(reference) == FIELDS
@@ -55,15 +47,9 @@ def test_reference_and_ingest_share_layer_shape(tmp_path):
     assert "geoserver" not in catalog_text
 
 
-def test_layer_variant_switches_shape_not_fields(tmp_path):
+def test_layer_variant_switches_shape_not_fields(build_app):
     """同一 item 换 variant 只该换 type/url，不该换字段集合。"""
-    app = create_app(
-        Settings(
-            database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
-            plugins_dir=ROOT / "plugins",
-        )
-    )
-    client = TestClient(app)
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
     xyz = client.get("/items/ing-1/layer", params={"variant": "xyz"}).json()
     wmts = client.get("/items/ing-1/layer", params={"variant": "wmts"}).json()
     assert set(xyz) == set(wmts)
@@ -73,20 +59,14 @@ def test_layer_variant_switches_shape_not_fields(tmp_path):
     assert wmts["url"] == wmts["wmts_capabilities"]
 
 
-def test_unknown_variant_is_rejected_with_the_supported_list(tmp_path):
-    app = create_app(
-        Settings(
-            database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
-            plugins_dir=ROOT / "plugins",
-        )
-    )
-    client = TestClient(app)
+def test_unknown_variant_is_rejected_with_the_supported_list(build_app):
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
     response = client.get("/items/ing-1/layer", params={"variant": "wms"})
     assert response.status_code == 400
     assert "preview" in response.json()["detail"]
 
 
-def test_titiler_is_only_named_inside_the_publisher_package(tmp_path):
+def test_titiler_is_only_named_inside_the_publisher_package():
     """切片实现名只能出现在 publishers 包里，核心不得按实现分支。"""
     core = ROOT / "app"
     offenders = [

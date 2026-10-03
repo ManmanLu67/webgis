@@ -1,17 +1,11 @@
 from datetime import UTC, datetime
 
-from app.config import Settings
-from app.main import create_app
 from app.models import Collection, Item, Provider
 from fastapi.testclient import TestClient
 
 
-def _client(tmp_path):
-    plugins = tmp_path / "plugins"
-    plugins.mkdir()
-    app = create_app(
-        Settings(database_url=f"sqlite:///{tmp_path / 'catalog.db'}", plugins_dir=plugins)
-    )
+def _client(build_app):
+    app = build_app()
     return TestClient(app), app
 
 
@@ -55,8 +49,8 @@ def _seed(app) -> None:
     session.close()
 
 
-def test_search_filters_place_time_and_cloud(tmp_path):
-    client, app = _client(tmp_path)
+def test_search_filters_place_time_and_cloud(build_app):
+    client, app = _client(build_app)
     _seed(app)
     response = client.get(
         "/items",
@@ -72,23 +66,23 @@ def test_search_filters_place_time_and_cloud(tmp_path):
     assert [feature["id"] for feature in body["features"]] == ["inside"]
 
 
-def test_search_empty_is_not_an_error(tmp_path):
-    client, app = _client(tmp_path)
+def test_search_empty_is_not_an_error(build_app):
+    client, app = _client(build_app)
     _seed(app)
     response = client.get("/items", params={"bbox": "30,30,40,40"})
     assert response.status_code == 200
     assert response.json()["features"] == []
 
 
-def test_antimeridian_is_rejected(tmp_path):
-    client, _app = _client(tmp_path)
+def test_antimeridian_is_rejected(build_app):
+    client, _app = _client(build_app)
     response = client.get("/items", params={"bbox": "170,-10,-170,10"})
     assert response.status_code == 400
     assert "antimeridian" in response.json()["detail"]
 
 
-def test_disabled_source_is_hidden(tmp_path):
-    client, app = _client(tmp_path)
+def test_disabled_source_is_hidden(build_app):
+    client, app = _client(build_app)
     _seed(app)
     session = app.state.session_factory()
     session.get(Provider, "local").enabled = False

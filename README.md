@@ -33,12 +33,18 @@ python scripts/smoke.py
 **开发期**分别起目录 API 和前端，切片路由同进程挂在 `/cog`：
 
 ```
-cd backend && .venv\Scripts\python -m uvicorn app.main:app --reload
+cd backend
+.venv\Scripts\python -m alembic upgrade head
+.venv\Scripts\python -m uvicorn app.main:build --factory --reload
 cd frontend && pnpm install && pnpm dev
 ```
 
 开发期不需要数据库，`Settings` 默认落在 `backend/catalog.db`；上传入库要真实切片
 的话装 GDAL 依赖：`pip install -e ".[dev,gdal,postgres]"`。
+
+**表结构只有迁移这一条路。** 启动时如果库里的 alembic 版本落后于代码 head，
+API 会直接拒绝启动而不是带着漂移跑。`backend/alembic.ini` 里的 URL 来自
+`WEBGIS_DATABASE_URL`，别再往 ini 里写死地址。
 
 **地址约定**：目录 API 在 `/api/*`（网关剥掉前缀），切片与 WMTS 在 `/cog/*`
 （前缀原样透传）。两种前缀并存是有意的——切片服务不是目录 API 的一部分。

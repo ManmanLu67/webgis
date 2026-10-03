@@ -14,8 +14,6 @@ pytest.importorskip("rasterio", reason="切片服务需要 GDAL")
 import morecantile
 import numpy
 import rasterio
-from app.config import Settings
-from app.main import create_app
 from app.publishers.cog_service import (
     CogAccessError,
     allowed_remote_hosts,
@@ -55,17 +53,10 @@ def cog(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(tmp_path: Path, cog: Path):
-    plugins = tmp_path / "plugins"
-    plugins.mkdir()
-    app = create_app(
-        Settings(
-            database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
-            plugins_dir=plugins,
-            data_dir=tmp_path / "data",
-        )
+def client(tmp_path: Path, cog: Path, build_app):
+    return TestClient(
+        build_app(), raise_server_exceptions=False
     )
-    return TestClient(app, raise_server_exceptions=False)
 
 
 def _tile(client: TestClient, href: str, *, zoom: int = ZOOM, x: int = TILE_X, y: int = TILE_Y):
@@ -230,39 +221,29 @@ def test_timing_measures_a_real_request(client, cog):
     assert body["bytes"] > 0
 
 
-def test_timing_never_claims_a_cache_hit_without_measuring_one(client, cog, tmp_path):
+def test_timing_never_claims_a_cache_hit_without_measuring_one(tmp_path, build_app):
     """宪章 C8：没有缓存层就报 none，装了缓存层也只报 unverified。"""
     for enabled in (False, True):
-        plugins = tmp_path / "plugins"
-        app = create_app(
-            Settings(
-                database_url=f"sqlite:///{tmp_path / f'c-{enabled}.db'}",
-                plugins_dir=plugins,
-                data_dir=tmp_path / "data",
-                tile_cache_enabled=enabled,
-            )
-        )
-        body = TestClient(app).get("/tiles/timing").json()
+        app = build_app(db_name=f"c-{enabled}", tile_cache_enabled=enabled)
+        try:
+            body = TestClient(app).get("/tiles/timing").json()
+        finally:
+            app.state.engine.dispose()
         assert body["cache"] == ("unverified" if enabled else "none")
 
 
 # --- 挂载开关 ---
 
 
-def test_blank_prefix_does_not_mount_the_tile_service(tmp_path, cog):
-    plugins = tmp_path / "plugins"
-    plugins.mkdir()
-    app = create_app(
-        Settings(
-            database_url=f"sqlite:///{tmp_path / 'catalog.db'}",
-            plugins_dir=plugins,
-            data_dir=tmp_path / "data",
-            tile_service_prefix="",
+def test_blank_prefix_does_not_mount_the_tile_service(tmp_path, cog, build_app):
+    app = build_app(db_name="no-tiles", tile_service_prefix="")
+    try:
+        response = TestClient(app).get(
+            "/cog/tiles/WebMercatorQuad/0/0/0.png", params={"url": cog.as_posix()}
         )
-    )
-    assert TestClient(app).get(
-        "/cog/tiles/WebMercatorQuad/0/0/0.png", params={"url": cog.as_posix()}
-    ).status_code == 404
+    finally:
+        app.state.engine.dispose()
+    assert response.status_code == 404
 
 
 def test_only_the_declared_tile_matrix_sets_are_mounted(client):

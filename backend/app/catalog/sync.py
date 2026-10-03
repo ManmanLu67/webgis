@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Collection, Item, Provider
 from app.plugins.loader import LoadReport
+from app.spatial import populate_item_geometry
 
 
 def sync_catalog(session: Session, report: LoadReport) -> None:
@@ -55,20 +56,21 @@ def upsert_found(session: Session, provider_id: str, found) -> None:
         )
         session.flush()
     if session.get(Item, found.id) is None:
-        session.add(
-            Item(
-                id=found.id,
-                collection_id=found.collection_id,
-                minx=found.minx,
-                miny=found.miny,
-                maxx=found.maxx,
-                maxy=found.maxy,
-                acquired_at=found.acquired_at,
-                cloud_cover=found.cloud_cover,
-                asset_href=found.asset_href,
-                access_mode=found.access_mode,
-            )
+        row = Item(
+            id=found.id,
+            collection_id=found.collection_id,
+            minx=found.minx,
+            miny=found.miny,
+            maxx=found.maxx,
+            maxy=found.maxy,
+            acquired_at=found.acquired_at,
+            cloud_cover=found.cloud_cover,
+            asset_href=found.asset_href,
+            access_mode=found.access_mode,
         )
+        # 顺手填 geometry，空间索引才有东西可指；没有 PostGIS 时存 WKT 文本。
+        populate_item_geometry(session.get_bind(), row)
+        session.add(row)
 
 
 def _config_json(plugin) -> str:

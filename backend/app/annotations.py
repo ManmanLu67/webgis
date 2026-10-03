@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 
 from app.models import Annotation
+from app.spatial import populate_annotation_geometry
 
 
 def validate_geometry(geometry: object) -> dict:
@@ -37,11 +38,20 @@ def to_collection(rows: list[Annotation]) -> dict:
     return {"type": "FeatureCollection", "features": [to_feature(row) for row in rows]}
 
 
-def new_annotation(annotation_id: str, geometry: dict, properties: dict | None) -> Annotation:
+def new_annotation(
+    annotation_id: str,
+    geometry: dict,
+    properties: dict | None,
+    bind=None,
+) -> Annotation:
     checked = validate_geometry(geometry)
-    return Annotation(
+    row = Annotation(
         id=annotation_id,
         geometry_json=json.dumps(checked),
         properties_json=json.dumps(properties or {}),
         created_at=datetime.now(UTC),
     )
+    # 有 PostGIS 时同时落一份 geometry，空间索引才对标注有意义。
+    if bind is not None:
+        populate_annotation_geometry(bind, row)
+    return row

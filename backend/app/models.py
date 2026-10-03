@@ -1,9 +1,17 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text
+from geoalchemy2 import Geometry
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.spatial import WKT_FALLBACK
+
+# geometry 只在 PostgreSQL 上有真身（PostGIS）；SQLite 上退化成 WKT 文本。
+# 用 with_variant 声明，两边共用同一份 ORM 定义，不会出现"迁移建的表和 ORM
+# 对不上"的漂移。详见 app/spatial.py。
+ITEM_GEOMETRY = Geometry(geometry_type="POLYGON", srid=4326, spatial_index=False)
+ANNOTATION_GEOMETRY = Geometry(geometry_type="GEOMETRY", srid=4326, spatial_index=False)
 
 
 class Provider(Base):
@@ -36,6 +44,7 @@ class Collection(Base):
 
 class Item(Base):
     __tablename__ = "item"
+    __table_args__ = (Index("ix_item_acquired_at", "acquired_at"),)
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     collection_id: Mapped[str] = mapped_column(ForeignKey("collection.id"))
@@ -47,6 +56,10 @@ class Item(Base):
     cloud_cover: Mapped[float | None] = mapped_column(Float, nullable=True)
     asset_href: Mapped[str] = mapped_column(Text)
     access_mode: Mapped[str] = mapped_column(String(32))
+    # 与上面四个 float 冗余，但只有它带索引：时序检索与空间过滤都走它。
+    geometry = mapped_column(
+        ITEM_GEOMETRY.with_variant(WKT_FALLBACK, "sqlite"), nullable=True
+    )
 
     collection: Mapped[Collection] = relationship(back_populates="items")
     layers: Mapped[list["Layer"]] = relationship(back_populates="item")
@@ -54,6 +67,8 @@ class Item(Base):
 
 class Job(Base):
     __tablename__ = "job"
+    # worker 每次只取 status='queued' 里最早的一条，这条索引就是干这个的。
+    __table_args__ = (Index("ix_job_status_created", "status", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     type: Mapped[str] = mapped_column(String(32))
@@ -87,3 +102,6 @@ class Annotation(Base):
     geometry_json: Mapped[str] = mapped_column(Text)
     properties_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    geometry = mapped_column(
+        ANNOTATION_GEOMETRY.with_variant(WKT_FALLBACK, "sqlite"), nullable=True
+    )

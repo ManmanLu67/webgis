@@ -24,9 +24,11 @@ def create_annotation(body: dict, request: Request) -> dict:
         validate_geometry(body.get("geometry"))
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    row = new_annotation(uuid.uuid4().hex, body["geometry"], body.get("properties"))
     session = request.app.state.session_factory()
     try:
+        row = new_annotation(
+            uuid.uuid4().hex, body["geometry"], body.get("properties"), session.get_bind()
+        )
         session.add(row)
         session.commit()
         session.refresh(row)

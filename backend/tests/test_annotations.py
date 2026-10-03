@@ -1,19 +1,12 @@
-from app.config import Settings
-from app.main import create_app
 from fastapi.testclient import TestClient
 
 
-def _client(tmp_path):
-    plugins = tmp_path / "plugins"
-    plugins.mkdir()
-    app = create_app(
-        Settings(database_url=f"sqlite:///{tmp_path / 'catalog.db'}", plugins_dir=plugins)
-    )
-    return TestClient(app)
+def _client(build_app):
+    return TestClient(build_app())
 
 
-def test_save_point_and_export(tmp_path):
-    client = _client(tmp_path)
+def test_save_point_and_export(build_app):
+    client = _client(build_app)
     created = client.post("/annotations", json={"geometry": {"type": "Point", "coordinates": [116, 40]}})
     assert created.status_code == 201
     exported = client.get("/annotations")
@@ -23,15 +16,15 @@ def test_save_point_and_export(tmp_path):
     assert body["features"][0]["geometry"]["type"] == "Point"
 
 
-def test_line_needs_two_points(tmp_path):
-    client = _client(tmp_path)
+def test_line_needs_two_points(build_app):
+    client = _client(build_app)
     response = client.post("/annotations", json={"geometry": {"type": "LineString", "coordinates": [[0, 0]]}})
     assert response.status_code == 400
     assert "两个点" in response.json()["detail"]
 
 
-def test_delete_annotation(tmp_path):
-    client = _client(tmp_path)
+def test_delete_annotation(build_app):
+    client = _client(build_app)
     created = client.post(
         "/annotations",
         json={"geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}},
