@@ -3,14 +3,18 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import fsspec
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from app.catalog.search import SearchError, parse_bbox, parse_datetime, search_items
 from app.catalog.stac import items_to_feature_collection
 from app.catalog.sync import upsert_found
+from app.config import Settings
 from app.models import Item, Job, Layer, Provider
+from app.providers.protocol import LayerSpec
 
 router = APIRouter()
 
@@ -108,7 +112,12 @@ def list_items(
 
 
 @router.get("/items/{item_id}/layer")
-def item_layer(item_id: str, request: Request, publisher: str | None = None) -> dict:
+def item_layer(
+    item_id: str,
+    request: Request,
+    publisher: str | None = None,
+    variant: str = "xyz",
+) -> dict:
     registry = request.app.state.publishers
     publisher_id = publisher or request.app.state.settings.default_publisher
     if publisher_id not in registry:
@@ -118,7 +127,10 @@ def item_layer(item_id: str, request: Request, publisher: str | None = None) -> 
         item = session.get(Item, item_id)
         if item is None:
             raise HTTPException(status_code=404, detail="unknown item")
-        spec = registry[publisher_id].publish(item)
+        try:
+            spec = registry[publisher_id].publish(item, variant=variant)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         row = session.get(Layer, spec.id)
         if row is None:
             row = Layer(
@@ -138,14 +150,10 @@ def item_layer(item_id: str, request: Request, publisher: str | None = None) -> 
             row.publisher_id = spec.publisher_id
             row.time_dimension = spec.time_dimension
         session.commit()
-        return {
-            "id": spec.id,
-            "type": spec.type,
-            "url": spec.url,
-            "style": spec.style,
-            "time_dimension": spec.time_dimension,
-            "publisher_id": spec.publisher_id,
-        }
+        payload = _layer_payload(spec)
+        # 参考型图层不经过发布器，没有 variant 概念；但字段集必须一致（宪章 C3）。
+        payload["variants"] = list(getattr(registry[publisher_id], "variants", ()))
+        return payload
     finally:
         session.close()
 
@@ -204,10 +212,66 @@ def read_job(job_id: str, request: Request) -> dict:
 
 
 @router.get("/tiles/timing")
-def tile_timing() -> dict:
+async def tile_timing(
+    request: Request,
+    url: str | None = None,
+    z: int = 0,
+    x: int = 0,
+    y: int = 0,
+) -> dict:
+    """实测一次瓦片耗时。
+
+    宪章 C8 要求：采样过才报耗时，观测到才报命中。所以这里真的发一次请求；
+    没给`url` 时如实说明"未采样"，不返回编造的 0。`cache` 只有 `none` 与
+    `unverified` 两种取值——命中率要从缓存层自己的日志读，不在这个端点里假设。
+    """
+    settings: Settings = request.app.state.settings
+    cache = "unverified" if settings.tile_cache_enabled else "none"
+    if not url:
+        return {
+            "duration_ms": None,
+            "cache": cache,
+            "sampled": False,
+            "note": "未指定 url，没有发起请求。要采样请传 ?url=<cog>&z=&x=&y=",
+        }
+
+    from app.publishers.cog_service import (
+        CogAccessError,
+        allowed_remote_hosts,
+        validate_cog_path,
+    )
+
+    try:
+        target = validate_cog_path(
+            url,
+            data_dir=settings.data_dir,
+            remote_hosts=allowed_remote_hosts(settings.remote_cog_hosts),
+        )
+    except CogAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    base = settings.tile_service_prefix.rstrip("/")
+    path = f"{base}/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url={quote(target, safe='')}"
     started = time.perf_counter()
+    if settings.public_base_url:
+        transport, client_kwargs = None, {"base_url": settings.public_base_url.rstrip("/")}
+        note = "经真实 HTTP 采样，含网关"
+    else:
+        transport = httpx.ASGITransport(app=request.app)
+        client_kwargs = {"base_url": "http://tile-service.internal"}
+        note = "进程内采样，不含网关与缓存层"
+    async with httpx.AsyncClient(transport=transport, **client_kwargs) as client:
+        response = await client.get(path)
     duration_ms = (time.perf_counter() - started) * 1000
-    return {"duration_ms": duration_ms, "cache": "none"}
+    return {
+        "duration_ms": round(duration_ms, 2),
+        "cache": cache,
+        "sampled": True,
+        "status": response.status_code,
+        "bytes": len(response.content),
+        "server_timing": response.headers.get("server-timing"),
+        "note": note,
+    }
 
 
 def _job_document(job: Job) -> dict:
@@ -223,33 +287,50 @@ def _job_document(job: Job) -> dict:
     }
 
 
-def _layer_document(plugin, item) -> dict:
-    note = plugin.manifest["license_note"]
-    try:
-        spec = plugin.provider.get_layer_spec(item.id)
-    except (NotImplementedError, KeyError):
-        return {
-            "type": "xyz" if "{z}" in item.asset_href else "cog",
-            "url": item.asset_href,
-            "attribution": note,
-            "tiling_scheme": "WebMercator",
-            "max_zoom": None,
-            "layer_kind": "imagery",
-            "url_template": None,
-            "crs": "EPSG:4326",
-            "attribution": note,
-        }
+def _layer_payload(spec, license_note: str = "") -> dict:
+    """LayerSpec 的统一出参。参考型与入库型共用这一个形状（宪章 C3）。"""
     return {
+        "id": spec.id,
         "type": spec.type,
         "url": spec.url,
-        "attribution": note,
+        "style": spec.style,
+        "time_dimension": spec.time_dimension,
+        "publisher_id": spec.publisher_id,
         "url_template": spec.url_template,
         "tiling_scheme": spec.tiling_scheme,
         "max_zoom": spec.max_zoom,
         "layer_kind": spec.layer_kind,
         "crs": spec.crs,
         "attribution": spec.attribution,
+        "license_note": license_note,
+        "wmts_capabilities": spec.wmts_capabilities,
+        "wmts_layer": spec.wmts_layer,
+        "georeference_note": spec.georeference_note,
+        "variants": [],
     }
+
+
+def _layer_document(plugin, item) -> dict:
+    """参考型源：优先问插件要 LayerSpec，拿不到就按地址形状兜底合成。"""
+    note = plugin.manifest["license_note"]
+    try:
+        spec = plugin.provider.get_layer_spec(item.id)
+    except (NotImplementedError, KeyError):
+        templated = "{z}" in item.asset_href
+        return _layer_payload(
+            LayerSpec(
+                id=f"{item.id}:{plugin.manifest['id']}",
+                type="xyz" if templated else "cog",
+                url=item.asset_href,
+                style={},
+                time_dimension=item.acquired_at.isoformat(),
+                publisher_id=plugin.manifest["id"],
+                url_template=item.asset_href if templated else None,
+                layer_kind="imagery",
+            ),
+            license_note=note,
+        )
+    return _layer_payload(spec, license_note=note)
 
 
 def _availability(row: Provider) -> str:

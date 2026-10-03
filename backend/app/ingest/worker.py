@@ -86,7 +86,10 @@ def _store_item(session, job, payload, result, publishers, publisher_id) -> None
     )
     session.add(item)
     session.flush()
-    spec = publishers[publisher_id].publish(item)
+    publisher = publishers[publisher_id]
+    # 入库后端原生支持的变体优先；只支持 WMTS 的后端就存 WMTS，不硬套 XYZ。
+    variant = "xyz" if "xyz" in getattr(publisher, "variants", ()) else publisher.variants[0]
+    spec = publisher.publish(item, variant=variant)
     session.add(
         Layer(
             id=spec.id,

@@ -27,11 +27,18 @@ class LayerSpec:
     time_dimension: str | None
     publisher_id: str
     url_template: str | None = None
+    # 只描述瓦片网格：Cesium 认的是这个，不是 crs。
     tiling_scheme: str = "WebMercator"
     max_zoom: int | None = None
     layer_kind: str = "imagery"
+    # 数据基准。用于署名与合规声明，不参与渲染决策。
     crs: str = "EPSG:4326"
     attribution: str = ""
+    # WMTS：capabilities 文档地址与其中的 Layer 标识。
+    wmts_capabilities: str | None = None
+    wmts_layer: str | None = None
+    # 需要在展示时说清的重投影 / 基准差异。
+    georeference_note: str = ""
 
 
 class DataSourceProvider(Protocol):

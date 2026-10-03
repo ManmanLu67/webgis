@@ -40,14 +40,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = factory
     app.state.load_errors = report.errors
     app.state.plugins = {item.manifest["id"]: item for item in report.loaded}
-    app.state.publishers = build_registry()
+    app.state.publishers = build_registry(tile_service_prefix=settings.tile_service_prefix)
     app.state.converter = default_converter()
     app.include_router(router)
     app.include_router(annotations_router)
+    _mount_tile_service(app, settings)
     if settings.worker_enabled:
         thread = threading.Thread(target=_worker_loop, args=(app,), daemon=True, name="ingest-worker")
         thread.start()
     return app
+
+
+def _mount_tile_service(app: FastAPI, settings: Settings) -> None:
+    """把 COG 动态切片挂进同一个应用。
+
+    具体实现与挂载细节都在 `publishers` 包里，核心只负责转达挂载失败的原因。
+    挂载失败不该让目录 API 一起起不来，所以只记进 `load_errors`。
+    """
+    from app.publishers.cog_service import mount_tile_service
+
+    error = mount_tile_service(app, settings)
+    if error:
+        app.state.load_errors.append(error)
 
 
 def _worker_loop(app: FastAPI) -> None:
