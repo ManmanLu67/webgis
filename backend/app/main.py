@@ -38,6 +38,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.session_factory = factory
+    # 挂上 engine 是为了让关停与测试能显式 dispose；SQLite 上不释放的话
+    # 文件句柄会一直占着，临时目录清不掉。
+    app.state.engine = engine
     app.state.load_errors = report.errors
     app.state.plugins = {item.manifest["id"]: item for item in report.loaded}
     app.state.publishers = build_registry(tile_service_prefix=settings.tile_service_prefix)

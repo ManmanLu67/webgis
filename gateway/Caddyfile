@@ -1,0 +1,53 @@
+# 遥感三维地球平台的默认入口。
+#
+# 为什么要有这一层：前端所有请求都打 /api/*，而切片路由在 /cog/*（不是 /api/cog/*）。
+# 两种前缀并存，所以不能一刀切 strip_prefix —— 那样会把瓦片地址也剥掉。
+#
+# 容器数守在三个：postgis + api + gateway。前端静态产物直接 COPY 进网关镜像，
+# 不再单起一个 web 容器，符合宪章 C7「默认路径容器数最少」。
+
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	log {
+		# 瓦片请求量大，默认只记错误，避免日志把磁盘写满。
+		output file /var/log/caddy/access.log {
+			roll_size 20mb
+			roll_keep 3
+		}
+	}
+
+	# 目录 API、入库任务、标注、耗时采样。/api 是网关加的前缀，
+	# 后端路由本身不带，所以整段剥掉。
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy api:8000
+	}
+
+	# COG 动态切片与 WMTS capabilities。前缀原样透传。
+	handle /cog/* {
+		reverse_proxy api:8000
+	}
+
+	# FastAPI 自带的契约文档，落在根路径上，不做前缀转换。
+	handle /openapi.json {
+		reverse_proxy api:8000
+	}
+	handle /docs {
+		reverse_proxy api:8000
+	}
+
+	# 静态资源交给网关自己服务。Cesium 的 Assets/Workers/Widgets 由
+	# vite-plugin-cesium 复制进 dist，走的是根路径下的绝对地址。
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

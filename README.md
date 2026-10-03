@@ -18,4 +18,47 @@
 
 ## 启动
 
-开发期分别启动目录 API 和前端。`docker compose up` 启动 PostGIS、API 和 Web。GeoServer、Redis、MinIO 不在默认路径里。
+一条命令起默认三容器：PostGIS、API、网关。网关同时是浏览器入口和前端静态宿主，
+所以打开 <http://localhost:8080> 就能用。
+
+```
+docker compose up
+python scripts/smoke.py
+```
+
+`scripts/smoke.py` 会走一遍真实链路：静态页面 → 目录 API → 上传一景 GeoTIFF →
+入库出 COG → 取瓦片 → 取 WMTS capabilities → 采样切片耗时。它不需要 Docker 以外
+的任何东西，仓库里也不带二进制测试数据（影像现场造）。
+
+**开发期**分别起目录 API 和前端，切片路由同进程挂在 `/cog`：
+
+```
+cd backend && .venv\Scripts\python -m uvicorn app.main:app --reload
+cd frontend && pnpm install && pnpm dev
+```
+
+开发期不需要数据库，`Settings` 默认落在 `backend/catalog.db`；上传入库要真实切片
+的话装 GDAL 依赖：`pip install -e ".[dev,gdal,postgres]"`。
+
+**地址约定**：目录 API 在 `/api/*`（网关剥掉前缀），切片与 WMTS 在 `/cog/*`
+（前缀原样透传）。两种前缀并存是有意的——切片服务不是目录 API 的一部分。
+
+## 对外服务
+
+入库后的 COG 通过默认切片服务同时给出三套地址，服务三类不同消费者：
+
+| 地址 | 消费者 | 说明 |
+| --- | --- | --- |
+| `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=<cog>` | Cesium、QGIS 的 XYZ 瓦片源 | 动态切片，无状态 |
+| `/cog/WMTSCapabilities.xml?url=<cog>&use_epsg=true` | ArcGIS Pro、任何按 OGC 读文档的客户端 | `use_epsg=true` 让 `SupportedCRS` 写成 `EPSG:3857` 而不是 URN，这是 Pro 能直接添加的关键 |
+| `/cog/preview?url=<cog>` | 单幅覆盖 | 渲染成一张图 |
+
+`url=` 参数直接交给 GDAL 打开，所以默认只放行 `WEBGIS_DATA_DIR` 之下的本地
+GeoTIFF；远程地址需要运维在 `WEBGIS_REMOTE_COG_HOSTS` 里显式列出主机。挡住
+`../` 穿越、软链逃逸、`file://` 与未放行主机。
+
+`GET /api/tiles/timing` 会真的发一次请求来测耗时，并如实说明有没有缓存层。
+没缓存层时报 `cache: "none"`，装了缓存层也只报 `"unverified"`——命中率要从缓存层
+自己的日志读，不在这个端点里假设。
+
+GeoServer、Redis、MinIO 不在默认路径里。

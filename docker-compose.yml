@@ -7,16 +7,59 @@ services:
       POSTGRES_DB: webgis
     ports:
       - "5432:5432"
+    volumes:
+      - postgis-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webgis -d webgis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 一次性迁移容器。api 之前必须先把 schema 建好，但不能让每个 api 副本
+  # 都去跑 upgrade head——多副本同时迁移会互相打架。
+  migrate:
+    build: ./backend
+    environment: &api-env
+      WEBGIS_DATABASE_URL: postgresql+psycopg://webgis:webgis@postgis:5432/webgis
+      WEBGIS_WORKER_ENABLED: "true"
+      WEBGIS_DATA_DIR: /app/data
+      WEBGIS_PUBLIC_BASE_URL: http://gateway:8080
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgis:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build: ./backend
     environment:
-      WEBGIS_DATABASE_URL: postgresql+psycopg://webgis:webgis@postgis:5432/webgis
-      WEBGIS_WORKER_ENABLED: "true"
-    ports:
-      - "8000:8000"
+      <<: *api-env
+    volumes:
+      # COG 与上传原件：切片端点和 worker 都在这个容器里，读的是同一份文件。
+      - api-data:/app/data
     depends_on:
-      - postgis
-  web:
-    build: ./frontend
+      postgis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # 没有就绪探针，网关会在 api 还没起完时反复 502。
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/openapi.json').status==200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # 默认入口。同时提供前端静态产物、反代 /api 与 /cog。
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
     ports:
-      - "4173:4173"
+      - "8080:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgis-data:
+  api-data:
