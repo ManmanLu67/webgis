@@ -8,11 +8,21 @@ from urllib.parse import quote
 import fsspec
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from sqlalchemy import select
 
 from app.catalog.search import SearchError, parse_bbox, parse_datetime, search_items
 from app.catalog.stac import items_to_feature_collection
 from app.catalog.sync import upsert_found
 from app.config import Settings
+from app.ingest.worker import (
+    CANCELLED,
+    FAILED,
+    QUEUED,
+    RUNNING,
+    SUCCESS,
+    TERMINAL,
+)
+from app.ingest.worker import cancel as cancel_job_in_queue
 from app.models import Item, Job, Layer, Provider
 from app.providers.protocol import LayerSpec
 
@@ -158,6 +168,38 @@ def item_layer(
         session.close()
 
 
+@router.get("/jobs")
+def list_jobs(request: Request, status: str | None = None, limit: int = 50) -> list[dict]:
+    """最近的入库任务。界面上要能看见自己的上传与失败原因。"""
+    session = request.app.state.session_factory()
+    try:
+        statement = select(Job).order_by(Job.created_at.desc()).limit(max(1, min(limit, 200)))
+        if status:
+            if status not in {QUEUED, RUNNING, SUCCESS, FAILED, CANCELLED}:
+                raise HTTPException(status_code=400, detail=f"unknown status {status}")
+            statement = statement.where(Job.status == status)
+        return [_job_document(row) for row in session.scalars(statement)]
+    finally:
+        session.close()
+
+
+@router.delete("/jobs/{job_id}")
+def cancel_job(job_id: str, request: Request) -> dict:
+    """取消还在排队的任务。已经在跑的不给取消。"""
+    session = request.app.state.session_factory()
+    try:
+        row = session.get(Job, job_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown job")
+        if row.status in TERMINAL:
+            raise HTTPException(status_code=409, detail=f"任务已处于 {row.status}，无法取消")
+        if not cancel_job_in_queue(session, job_id):
+            raise HTTPException(status_code=409, detail="任务已被 worker 领走，无法取消")
+        return _job_document(session.get(Job, job_id))
+    finally:
+        session.close()
+
+
 @router.post("/jobs/uploads", status_code=202)
 async def upload_job(
     request: Request,
@@ -167,24 +209,52 @@ async def upload_job(
     try:
         datetime.fromisoformat(acquired_at)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="acquired_at must be a timezone-aware timestamp") from exc
+        raise HTTPException(
+            status_code=400, detail="acquired_at must be a timezone-aware timestamp"
+        ) from exc
+
+    settings: Settings = request.app.state.settings
+    suffix = Path(file.filename or "upload.bin").suffix.lower()
+    if suffix not in {".tif", ".tiff"}:
+        raise HTTPException(status_code=400, detail="只接受 .tif 或 .tiff 文件")
+
     job_id = uuid.uuid4().hex
-    incoming = request.app.state.settings.data_dir / "incoming"
+    incoming = settings.data_dir / "incoming"
     incoming.mkdir(parents=True, exist_ok=True)
-    suffix = Path(file.filename or "upload.bin").suffix or ".bin"
     source = incoming / f"{job_id}{suffix}"
-    payload = await file.read()
-    with fsspec.open(source.as_posix(), "wb") as handle:
-        handle.write(payload)
+
+    # 边读边写并计数。原来是 `await file.read()` 一次性读进内存，一个几 GB 的
+    # 上传就能把进程打爆，而且没有任何上限。
+    written = 0
+    cap = settings.max_upload_bytes
+    try:
+        with fsspec.open(source.as_posix(), "wb") as handle:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if cap and written > cap:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过上限 {cap // (1024 * 1024)} MB",
+                    )
+                handle.write(chunk)
+    except HTTPException:
+        source.unlink(missing_ok=True)
+        raise
+
     now = datetime.now(UTC)
     job = Job(
         id=job_id,
         type="ingest",
-        status="queued",
+        status=QUEUED,
         progress=0,
         error=None,
         payload_json=json.dumps(
-            {"source_path": str(source), "acquired_at": acquired_at, "filename": file.filename}
+            {
+                "source_path": str(source),
+                "acquired_at": acquired_at,
+                "filename": file.filename,
+                "bytes": written,
+            }
         ),
         created_at=now,
         updated_at=now,

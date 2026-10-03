@@ -79,18 +79,55 @@ def test_interrupted_job_fails_without_an_item(build_app):
     session.close()
 
 
-def test_non_image_fails_without_item(build_app):
+def test_non_image_is_refused_at_the_door(build_app):
+    """非 GeoTIFF 在上传时就拒掉。
+
+    原来它会先排队、worker 转完再失败——用户要等一分钟才看到一句"不是图片"，
+    而答案在上传那一刻就已经知道了。
+    """
     app = _app(build_app)
     client = TestClient(app)
     created = _upload(client, "notes.txt", "2020-06-01T00:00:00Z", b"hello")
+    assert created.status_code == 400
+    assert ".tif" in created.json()["detail"]
+
     session = app.state.session_factory()
     try:
-        finished = run_once(session, app.state.converter, app.state.publishers, app.state.settings)
-        assert finished.status == "failed"
-        assert "not an image" in finished.error
-        assert session.get(Item, created.json()["id"]) is None
+        assert session.query(Job).count() == 0, "被拒的上传不该留下任务记录"
     finally:
         session.close()
+
+
+def test_upload_rejects_an_unparseable_timestamp(build_app):
+    app = _app(build_app)
+    client = TestClient(app)
+    created = _upload(client, "a.tif", "not-a-timestamp")
+    assert created.status_code == 400
+    assert "timezone-aware" in created.json()["detail"]
+
+
+def test_upload_enforces_the_size_cap(build_app, tmp_path):
+    """超限的上传要返回 413，并且不留半截文件与任务记录。"""
+    app = _app(build_app)
+    client = TestClient(app)
+    app.state.settings.max_upload_bytes = 64
+    created = _upload(client, "big.tif", "2020-06-01T00:00:00Z", b"x" * 4096)
+    assert created.status_code == 413
+    session = app.state.session_factory()
+    try:
+        assert session.query(Job).count() == 0
+    finally:
+        session.close()
+    assert list((tmp_path / "data" / "incoming").glob("*")) == [], "半截文件应当清掉"
+
+
+def test_upload_records_the_byte_count(build_app):
+    app = _app(build_app)
+    client = TestClient(app)
+    body = b"not-really-tiff" * 10
+    created = _upload(client, "a.tif", "2020-06-01T00:00:00Z", body)
+    assert created.status_code == 202
+    assert created.json()["payload"]["bytes"] == len(body)
 
 
 def test_times_stay_distinct(build_app):
