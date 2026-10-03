@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
+import { loadTimes as fetchTimes, type CatalogSource, type Job } from "./api/client"
+import { describeJob, jobTitle } from "./api/jobs"
 import type { Bookmark } from "./map/bookmarks"
-import { type CatalogSource, layerPickerSources } from "./map/drapeSources"
+import { layerPickerSources } from "./map/drapeSources"
 import { parseLayerDate } from "./map/layerDate"
 import { groupLayers, type ManagedLayer } from "./map/layers"
 import { sceneOptionLabel, type SwipeScene } from "./map/swipe"
@@ -17,6 +19,7 @@ const props = defineProps<{
   scenes: SwipeScene[]
   tilesetConfigured: boolean
   sketching: boolean
+  jobs: Job[]
 }>()
 
 const emit = defineEmits<{
@@ -34,6 +37,10 @@ const emit = defineEmits<{
   useBookmark: [bookmark: Bookmark]
   customXyz: [template: { name: string; url_template: string; tiling_scheme: string; max_zoom: number; layer_kind: string; time: string }]
   loadSource: [payload: { id: string; name: string; datetime?: string; bbox?: number[] }]
+  uploadCog: [payload: { file: File; acquiredAt: string }]
+  refreshJobs: []
+  cancelJob: [jobId: string]
+  sampleTiming: []
   home: []
 }>()
 
@@ -69,16 +76,48 @@ const south = ref("")
 const east = ref("")
 const north = ref("")
 const customDate = ref("")
+const uploadFile = ref<File | null>(null)
+const uploadDate = ref(today())
+
+/** 采集日期默认今天：多数情况下用户传的就是刚拍的那一景。 */
+function today(): string {
+  const now = new Date()
+  const month = `${now.getMonth() + 1}`.padStart(2, "0")
+  const day = `${now.getDate()}`.padStart(2, "0")
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+const uploadHint = ref("")
+const canUpload = computed(() => uploadFile.value !== null && uploadDate.value !== "")
 
 const sections = [
   { id: "view", label: "视图" },
   { id: "layers", label: "图层" },
+  { id: "ingest", label: "入库" },
   { id: "draw", label: "标注" },
   { id: "measure", label: "量算" },
   { id: "place", label: "定位" },
 ]
 
 const pickerSources = computed(() => layerPickerSources(props.sources))
+
+function onFilePicked(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  uploadFile.value = file
+  uploadHint.value = ""
+  if (file && !/\.(tif|tiff)$/i.test(file.name)) {
+    // 后端也会拒，但在这里先说清楚，省得白等一次上传
+    uploadHint.value = "只接受 .tif 或 .tiff"
+  }
+}
+
+function submitUpload(): void {
+  if (!uploadFile.value || !canUpload.value) return
+  emit("uploadCog", { file: uploadFile.value, acquiredAt: uploadDate.value })
+  uploadFile.value = null
+  uploadHint.value = "已提交，正在排队"
+}
 
 function toggleSection(id: string): void {
   const opening = openSection.value !== id
@@ -143,28 +182,17 @@ async function loadTimes(): Promise<void> {
     return
   }
   pickerError.value = ""
-  const body: Record<string, unknown> = { limit: 12 }
-  if (bbox) body.bbox = bbox
   try {
-    const response = await fetch(`/api/providers/${picked.value.id}/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    const payload = await response.json()
-    if (!response.ok) {
-      pickerError.value = typeof payload.detail === "string" ? payload.detail : "检索失败"
-      return
-    }
-    times.value = payload.items ?? []
-    selectedTime.value = times.value[0]?.time ?? ""
-    if (!times.value.length) {
+    const found = await fetchTimes(picked.value.id, bbox ?? [])
+    times.value = found
+    selectedTime.value = found[0]?.time ?? ""
+    if (!found.length) {
       pickerError.value = "没有可加载的图层"
       return
     }
     pickerStep.value = "time"
-  } catch {
-    pickerError.value = "目录未连接"
+  } catch (error) {
+    pickerError.value = error instanceof Error ? error.message : "检索失败"
   }
 }
 
@@ -339,6 +367,32 @@ function submitCustom(): void {
           </div>
         </template>
 
+        <template v-else-if="section.id === 'ingest'">
+          <p class="muted">上传 GeoTIFF，转成 COG 后由切片服务出瓦片。</p>
+          <label class="field">影像 <input type="file" accept=".tif,.tiff,image/tiff" @change="onFilePicked" /></label>
+          <label class="field">拍摄日期 <input v-model="uploadDate" type="date" /></label>
+          <button type="button" class="primary" :disabled="!canUpload" @click="submitUpload">上传入库</button>
+          <p v-if="uploadHint" class="hint">{{ uploadHint }}</p>
+          <p v-if="jobs.length" class="muted">最近任务</p>
+          <ul v-if="jobs.length" class="source-list">
+            <li v-for="job in jobs" :key="job.id">
+              <span class="job" :data-tone="describeJob(job).tone">
+                {{ jobTitle(job) }} · {{ describeJob(job).label }}
+              </span>
+              <button
+                v-if="job.status === 'queued'"
+                type="button"
+                class="link"
+                @click="emit('cancelJob', job.id)"
+              >
+                取消
+              </button>
+            </li>
+          </ul>
+          <button type="button" class="text-btn" @click="emit('refreshJobs')">刷新任务</button>
+          <button type="button" class="text-btn" @click="emit('sampleTiming')">采样切片耗时</button>
+        </template>
+
         <template v-else-if="section.id === 'draw'">
           <div class="actions">
             <button type="button" @click="emit('sketch', 'point')">点</button>
@@ -511,4 +565,10 @@ function submitCustom(): void {
 .muted, .hint { margin: 0; color: #8ea0ab; }
 .hint { margin-top: 8px; color: #f3ddaa; }
 .result { margin: 0; font-variant-numeric: tabular-nums; }
+/* 任务状态按语义着色，失败要一眼能看出来 */
+.job { color: #cfdbe2; font-size: 13px; }
+.job[data-tone="wait"] { color: #8ea0ab; }
+.job[data-tone="busy"] { color: #8fc7e8; }
+.job[data-tone="ok"] { color: #8fd6a8; }
+.job[data-tone="bad"] { color: #f0a3a3; }
 </style>

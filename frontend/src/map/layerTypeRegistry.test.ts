@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, beforeEach } from "vitest"
@@ -57,5 +57,25 @@ describe("图层类型注册表", () => {
     const source = readFileSync(resolve(here, "globe.ts"), "utf8")
     expect(source).not.toMatch(/ion:\/\//)
     expect(source).not.toMatch(/openstreetmap/i)
+  })
+
+  it("请求只从 api 层发出，不散在组件里", () => {
+    // 之前 6 个裸 fetch 分布在两个 .vue 文件里，各自带一份错误处理。
+    // 收敛之后错误解析只有一处，失败路径也只有一种形状。
+    const root = resolve(here, "..")
+    const offenders: string[] = []
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = resolve(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+          continue
+        }
+        if (!/\.(ts|vue)$/.test(entry.name) || entry.name.endsWith(".test.ts")) continue
+        if (readFileSync(full, "utf8").includes("fetch(")) offenders.push(full)
+      }
+    }
+    walk(root)
+    expect(offenders).toEqual([resolve(root, "api", "client.ts")])
   })
 })

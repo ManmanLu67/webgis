@@ -1,6 +1,21 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue"
+import { onMounted, onUnmounted, ref, watch } from "vue"
 import { attributionOf, toMountableLayer, type WireLayerSpec } from "./api/layerSpec"
+import {
+  cancelJob,
+  layerSpec,
+  listAnnotations,
+  listJobs,
+  listProviders,
+  readJob,
+  saveAnnotation,
+  searchProvider,
+  tileTiming,
+  uploadCog,
+  type CatalogSource,
+  type Job,
+} from "./api/client"
+import { pollJob } from "./api/jobs"
 import { resolveGlobeConfig } from "./config"
 import { configureCesium } from "./map/cesiumLayers"
 import { asGeoGeometry, startGlobe, type GeoGeometry, type GlobeHandles } from "./map/globe"
@@ -32,7 +47,7 @@ const flyLon = ref(116)
 const flyLat = ref(40)
 const bookmarkName = ref("北京")
 const annotations = ref<{ id?: string; geometry: GeoGeometry }[]>([])
-const sources = ref<{ id: string; name: string; availability: string; drape: boolean; picker: "time" | "extent" | "template" | null }[]>([])
+const sources = ref<CatalogSource[]>([])
 const xyzName = ref("")
 const xyzUrl = ref("")
 const xyzScheme = ref("WebMercator")
@@ -47,6 +62,14 @@ const extraLayers = new Map<string, LayerHandle>()
 let handles: GlobeHandles | null = null
 let swipeLeft: LayerHandle | null = null
 let swipeRight: LayerHandle | null = null
+const jobs = ref<Job[]>([])
+// 同一时刻只跟一个任务。新一轮上传会中止上一轮，避免两个轮询同时刷状态。
+let jobPoll: AbortController | null = null
+
+onUnmounted(() => {
+  jobPoll?.abort()
+  jobPoll = null
+})
 
 function sceneById(id: string): SwipeScene {
   return scenes.value.find((scene) => scene.id === id) ?? scenes.value[0]
@@ -61,6 +84,7 @@ onMounted(async () => {
     attribution.value = [handles.imagery.attribution, handles.tileset?.attribution ?? ""].filter(Boolean).join(" · ")
     await loadAnnotations()
     await loadSources()
+    await loadJobs()
   } catch (error) {
     errorText.value = 1
     attribution.value = error instanceof Error ? error.message : "地球加载失败"
@@ -176,14 +200,8 @@ async function onFinish(): Promise<void> {
   const localId = crypto.randomUUID()
   handles?.showAnnotation(localId, result.geometry)
   try {
-    const response = await fetch("/api/annotations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ geometry: result.geometry }),
-    })
-    if (!response.ok) throw new Error("保存失败")
-    const feature = await response.json()
-    annotations.value = [...annotations.value, feature]
+    const feature = await saveAnnotation(result.geometry)
+    annotations.value = [...annotations.value, { id: feature.id ?? localId, geometry: result.geometry }]
     toolMessage.value = "已写入目录"
   } catch {
     annotations.value = [...annotations.value, { id: localId, geometry: result.geometry }]
@@ -242,21 +260,11 @@ function onUseBookmark(bookmark: Bookmark): void {
 }
 
 async function onLoadSource(payload: { id: string; name: string; datetime?: string; bbox?: number[] }): Promise<void> {
-  const body: Record<string, unknown> = { limit: 1 }
+  const body: { limit: number; datetime?: string; bbox?: number[] } = { limit: 1 }
   if (payload.datetime) body.datetime = payload.datetime
   if (payload.bbox) body.bbox = payload.bbox
   try {
-    const response = await fetch(`/api/providers/${payload.id}/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    const result = await response.json()
-    if (!response.ok) {
-      toolMessage.value = typeof result.detail === "string" ? result.detail : "加载失败"
-      return
-    }
-    const items = result.items ?? []
+    const items = await searchProvider(payload.id, body)
     if (!items.length) {
       toolMessage.value = "没有可加载的图层"
       return
@@ -265,8 +273,8 @@ async function onLoadSource(payload: { id: string; name: string; datetime?: stri
       await placeLoadedItem(payload.id, payload.name, item)
     }
     toolMessage.value = `已加载 ${items.length} 条`
-  } catch {
-    toolMessage.value = "目录未连接"
+  } catch (error) {
+    toolMessage.value = error instanceof Error ? error.message : "目录未连接"
   }
 }
 
@@ -327,17 +335,8 @@ async function onCustomXyz(template: {
   time: string
 }): Promise<void> {
   try {
-    const response = await fetch("/api/providers/custom_xyz/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ template }),
-    })
-    const body = await response.json()
-    if (!response.ok) {
-      toolMessage.value = typeof body.detail === "string" ? body.detail : "添加失败"
-      return
-    }
-    const item = body.items?.[0]
+    const items = await searchProvider("custom_xyz", { template })
+    const item = items[0]
     if (!item || !handles) return
     const handle = await handles.mountSwipeSide(
       {
@@ -367,18 +366,8 @@ async function onCustomXyz(template: {
 
 async function loadSources(): Promise<void> {
   try {
-    const response = await fetch("/api/providers")
-    if (!response.ok) return
-    const rows = await response.json()
-    sources.value = rows
-      .filter((row: { id: string }) => !row.id.startsWith("sample_"))
-      .map((row: { id: string; name: string; availability?: string; drape?: boolean; picker?: "time" | "extent" | "template" | null }) => ({
-        id: row.id,
-        name: row.name,
-        availability: row.availability ?? "ready",
-        drape: Boolean(row.drape),
-        picker: row.picker ?? null,
-      }))
+    // 演示用的 sample_* 不该出现在给用户看的弹层里
+    sources.value = (await listProviders()).filter((row) => !row.id.startsWith("sample_"))
   } catch {
     sources.value = []
   }
@@ -386,21 +375,123 @@ async function loadSources(): Promise<void> {
 
 async function loadAnnotations(): Promise<void> {
   try {
-    const response = await fetch("/api/annotations")
-    if (!response.ok) return
-    const body = await response.json()
-    const features: unknown[] = Array.isArray(body?.features) ? body.features : []
+    const features = await listAnnotations()
     const loaded: { id?: string; geometry: GeoGeometry }[] = []
     for (const feature of features) {
-      const geometry = asGeoGeometry((feature as { geometry?: unknown }).geometry)
+      const geometry = asGeoGeometry(feature.geometry)
       if (!geometry) continue
-      const id = (feature as { id?: unknown }).id
-      loaded.push({ id: id === undefined ? undefined : String(id), geometry })
-      handles?.showAnnotation(String(id), geometry)
+      loaded.push({ id: feature.id, geometry })
+      if (feature.id) handles?.showAnnotation(feature.id, geometry)
     }
     annotations.value = loaded
   } catch {
     toolMessage.value = ""
+  }
+}
+
+async function loadJobs(): Promise<void> {
+  try {
+    jobs.value = await listJobs({ limit: 12 })
+  } catch {
+    // 任务列表不是主链路，拉不到就静默，保持上一次的结果
+  }
+}
+
+async function onUploadCog(payload: { file: File; acquiredAt: string }): Promise<void> {
+  toolMessage.value = "正在上传…"
+  try {
+    const queued = await uploadCog(payload.file, `${payload.acquiredAt}T00:00:00Z`)
+    upsertJob(queued)
+    toolMessage.value = "已入队，正在转 COG"
+    await loadJobs()
+    // COG 转换是分钟级的，所以放到后台轮询；用户可以继续操作别的图层。
+    void watchJob(queued.id)
+  } catch (error) {
+    toolMessage.value = error instanceof Error ? error.message : "上传失败"
+  }
+}
+
+async function watchJob(jobId: string): Promise<void> {
+  if (jobPoll) jobPoll.abort()
+  jobPoll = new AbortController()
+  try {
+    const finished = await pollJob(jobId, readJob, {
+      signal: jobPoll.signal,
+      onUpdate: upsertJob,
+    })
+    if (finished.status === "success") {
+      await mountIngested(finished.payload.item_id ?? finished.id)
+    } else if (finished.status === "failed") {
+      toolMessage.value = finished.error ? `入库失败：${finished.error}` : "入库失败"
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return
+    toolMessage.value = error instanceof Error ? error.message : "入库状态未知"
+  } finally {
+    jobPoll = null
+  }
+}
+
+function upsertJob(job: Job): void {
+  const rest = jobs.value.filter((row) => row.id !== job.id)
+  jobs.value = [job, ...rest].slice(0, 12)
+}
+
+/** 入库完成后把图层挂到地球上——这样"上传"才有看得见的产出。 */
+async function mountIngested(itemId: string): Promise<void> {
+  try {
+    const wire = await layerSpec(itemId)
+    if (!handles) return
+    const handle = await handles.mountSwipeSide(
+      toMountableLayer(wire, itemId),
+      "none",
+    )
+    extraLayers.set(itemId, handle)
+    managedLayers.value = [
+      ...managedLayers.value,
+      {
+        id: itemId,
+        name: `上传 ${itemId.slice(0, 8)}`,
+        group: "本地入库",
+        visible: true,
+        opacity: 1,
+        order: 100 + managedLayers.value.length,
+      },
+    ]
+    toolMessage.value = "入库完成，图层已挂上地球"
+  } catch (error) {
+    toolMessage.value = error instanceof Error ? error.message : "取图层描述失败"
+  }
+}
+
+async function onCancelJob(jobId: string): Promise<void> {
+  try {
+    upsertJob(await cancelJob(jobId))
+  } catch (error) {
+    toolMessage.value = error instanceof Error ? error.message : "取消失败"
+  }
+}
+
+async function onSampleTiming(): Promise<void> {
+  const layer = managedLayers.value.find((row) => row.group === "本地入库")
+  if (!layer) {
+    toolMessage.value = "先上传一景影像，才能采样切片耗时"
+    return
+  }
+  try {
+    const wire = await layerSpec(layer.id)
+    if (!wire.url) {
+      toolMessage.value = "该图层没有可采样的瓦片地址"
+      return
+    }
+    const href = new URL(wire.url, window.location.href)
+    const target = href.searchParams.get("url") ?? ""
+    const timing = await tileTiming({ url: target, z: 0, x: 0, y: 0 })
+    toolMessage.value = timing.sampled
+      ? `切片耗时 ${timing.duration_ms} ms（缓存：${timing.cache}）`
+      : timing.note
+  } catch (error) {
+    toolMessage.value = error instanceof Error ? error.message : "采样失败"
   }
 }
 
@@ -453,6 +544,7 @@ function startDrag(event: PointerEvent): void {
       :measure-text="measureText"
       :bookmarks="bookmarks"
       :sources="sources"
+      :jobs="jobs"
       v-model:xyz-name="xyzName"
       v-model:xyz-url="xyzUrl"
       v-model:xyz-scheme="xyzScheme"
@@ -461,6 +553,10 @@ function startDrag(event: PointerEvent): void {
       v-model:xyz-time="xyzTime"
       @custom-xyz="onCustomXyz"
       @load-source="onLoadSource"
+      @upload-cog="onUploadCog"
+      @refresh-jobs="loadJobs"
+      @cancel-job="onCancelJob"
+      @sample-timing="onSampleTiming"
       @visible="onLayerVisible"
       @opacity="onLayerOpacity"
       @move="onLayerMove"

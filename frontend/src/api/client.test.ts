@@ -1,0 +1,113 @@
+import { describe, expect, it, vi } from "vitest"
+
+import { ApiError, detailOf } from "./client"
+
+/** 把 fetch 换成可控的假实现，逐个检查请求的形状与错误的处理。 */
+type FetchCall = [string, RequestInit | undefined]
+
+function stubFetch(body: unknown, status = 200) {
+  const calls: FetchCall[] = []
+  const spy = vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push([url, init])
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+    } as unknown as Response
+  })
+  vi.stubGlobal("fetch", spy)
+  return { spy, calls }
+}
+
+describe("请求前缀", () => {
+  it("一律走 /api 前缀，由网关或 vite proxy 转发", async () => {
+    const { calls } = stubFetch([])
+    const { listProviders } = await import("./client")
+    await listProviders()
+    expect(calls[0][0]).toBe("/api/providers")
+  })
+
+  it("条目 id 与 provider id 做 URL 编码", async () => {
+    const { calls } = stubFetch({ items: [] })
+    const { searchProvider } = await import("./client")
+    await searchProvider("weird id/../x", { limit: 1 })
+    expect(calls[0][0]).toBe("/api/providers/weird%20id%2F..%2Fx/search")
+  })
+
+  it("上传走 multipart，不手写 Content-Type", async () => {
+    // 手写 multipart 的 boundary 会与浏览器自己生成的那个冲突
+    const { calls } = stubFetch({ id: "j", status: "queued", payload: {} })
+    const { uploadCog } = await import("./client")
+    await uploadCog(new File(["x"], "a.tif"), "2024-01-01T00:00:00Z")
+    const init = calls[0][1] as RequestInit
+    expect(init.method).toBe("POST")
+    expect(init.body).toBeInstanceOf(FormData)
+    expect(init.headers ?? {}).not.toHaveProperty("Content-Type")
+  })
+})
+
+describe("错误处理", () => {
+  it("把 FastAPI 的 detail 变成 Error.message", async () => {
+    stubFetch({ detail: "未知数据源" }, 404)
+    const { searchProvider } = await import("./client")
+    await expect(searchProvider("nope", {})).rejects.toThrow("未知数据源")
+  })
+
+  it("带上 HTTP 状态码，便于界面区分对待", async () => {
+    stubFetch({ detail: "未实现" }, 501)
+    const { searchProvider } = await import("./client")
+    await expect(searchProvider("jilin1", {})).rejects.toMatchObject({ status: 501 })
+  })
+
+  it("校验错误数组拼成人能读的话", () => {
+    expect(
+      detailOf({ detail: [{ msg: "field required" }, { msg: "wrong type" }] }),
+    ).toBe("field required；wrong type")
+  })
+
+  it("没有 detail 时退回状态码说明", async () => {
+    stubFetch("网关错误", 502)
+    const { listProviders } = await import("./client")
+    await expect(listProviders()).rejects.toThrow("请求失败 HTTP 502")
+  })
+
+  it("非 JSON 响应不会把解析异常漏给调用方", async () => {
+    stubFetch("<html>502</html>", 502)
+    const { listProviders } = await import("./client")
+    await expect(listProviders()).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it("连不上时说的是连接问题，不是 HTTP 错误", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new TypeError("Failed to fetch")
+    }))
+    const { listProviders } = await import("./client")
+    await expect(listProviders()).rejects.toThrow("目录未连接")
+    await expect(listProviders()).rejects.toMatchObject({ status: 0 })
+  })
+
+  it("响应体缺失或形状不对时返回 undefined 而不是抛", () => {
+    expect(detailOf(null)).toBeUndefined()
+    expect(detailOf("")).toBeUndefined()
+    expect(detailOf({})).toBeUndefined()
+    expect(detailOf({ detail: 42 })).toBeUndefined()
+  })
+})
+
+describe("任务查询参数", () => {
+  it("只带上确实给了的可选项", async () => {
+    const { calls } = stubFetch([])
+    const { listJobs } = await import("./client")
+    await listJobs()
+    await listJobs({ status: "queued", limit: 5 })
+    expect(calls[0][0]).toBe("/api/jobs")
+    expect(calls[1][0]).toBe("/api/jobs?status=queued&limit=5")
+  })
+
+  it("耗时采样把 COG 地址带上", async () => {
+    const { calls } = stubFetch({ duration_ms: 1, cache: "none", sampled: true, note: "" })
+    const { tileTiming } = await import("./client")
+    await tileTiming({ url: "C:/data/a b.tif", z: 3, x: 1, y: 2 })
+    expect(calls[0][0]).toBe("/api/tiles/timing?url=C%3A%2Fdata%2Fa+b.tif&z=3&x=1&y=2")
+  })
+})
