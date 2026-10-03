@@ -7,4 +7,7 @@ credentials: []
 license_note: "合成演示记录，不是第三方数据。"
 cache_allowed: true
 status: implemented
+availability: ready
+drape: false
+picker: null
 entrypoint: provider:IngestProvider

@@ -7,4 +7,7 @@ credentials: [service_account]
 license_note: "需要 Google Earth Engine 账号。未配置前不发出请求。条款以 Google 官方说明为准。"
 cache_allowed: false
 status: implemented
+availability: needs_config
+drape: false
+picker: null
 entrypoint: provider:GeeProvider

@@ -74,9 +74,11 @@ def upsert_found(session: Session, provider_id: str, found) -> None:
 
 
 def _config_json(plugin) -> str:
-    availability = getattr(plugin.provider, "availability", "ready")
-    if plugin.manifest["status"] == "skeleton":
-        availability = "skeleton"
+    """availability 以 manifest 为准。
+
+    以前是 `getattr(provider, "availability", "ready")` —— 声明在类属性里，
+    隐式取值，加载器完全不校验。现在 manifest 必须显式写，坏了在加载时就报错。
+    """
     return json.dumps(
-        {"availability": availability, "credentials": plugin.manifest["credentials"]}
+        {"availability": plugin.manifest["availability"], "credentials": plugin.manifest["credentials"]}
     )

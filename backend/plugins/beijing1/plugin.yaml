@@ -7,4 +7,7 @@ credentials: []
 license_note: "无授权与接口文档。不实现真实接口。用户可把影像交给本地文件。"
 cache_allowed: false
 status: skeleton
+availability: skeleton
+drape: false
+picker: null
 entrypoint: provider:Beijing1Provider

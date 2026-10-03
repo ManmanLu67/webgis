@@ -1,3 +1,16 @@
+"""插件发现与契约校验。
+
+契约收紧的理由：前端「图层」弹层的全部过滤逻辑都建立在 `availability`、`drape`、
+`picker` 这三个字段上，但它们原先既不在必填项里，也不是有类型约束的值——插件
+作者漏写一个，前端就静默少一个源，而且没有任何报错。
+
+所以这里把三件事定死：
+1. 必填项与取值范围都在加载时校验，坏插件只进 `report.errors`，不影响其他插件；
+2. `availability` 由 manifest 显式声明，不再靠 provider 类属性隐式表达
+   （原先两处真相源，`getattr(provider, "availability", "ready")` 是 duck-type）；
+3. 校验错误要说清是"哪个字段、缺了还是取值非法"，插件作者能照着改。
+"""
+
 import importlib.util
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,9 +30,17 @@ REQUIRED_FIELDS = (
     "cache_allowed",
     "status",
     "entrypoint",
+    # 前端弹层靠这三个字段决定一个源能不能铺到地球上、要不要问范围或时间。
+    # 缺了就得让插件在这里报错，而不是让界面上少一个源。
+    "availability",
+    "drape",
+    "picker",
 )
 MODES = {"reference", "ingest"}
 STATUSES = {"implemented", "skeleton"}
+AVAILABILITIES = {"ready", "needs_config", "skeleton"}
+# picker: None=无需交互, template=填地址模板, extent=填地图范围, time=选时间
+PICKERS = {None, "template", "extent", "time"}
 
 
 @dataclass
@@ -44,28 +65,18 @@ def load_plugins(plugins_dir: Path) -> LoadReport:
         manifest_path = path / "plugin.yaml"
         if not manifest_path.exists():
             continue
-        try:
-            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            report.errors.append(f"{path.name}: invalid plugin.yaml ({exc})")
+        error = _read_manifest(path, manifest_path)
+        if error is not None:
+            report.errors.append(error)
             continue
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         if not isinstance(manifest, dict):
             report.errors.append(f"{path.name}: plugin.yaml must be a mapping")
             continue
-        missing = [key for key in REQUIRED_FIELDS if key not in manifest]
-        if missing:
-            report.errors.append(f"{path.name}: missing field: {missing[0]}")
-            continue
-        if manifest["id"] != path.name:
-            report.errors.append(
-                f"{path.name}: id {manifest['id']!r} does not match directory name"
-            )
-            continue
-        if manifest["mode"] not in MODES:
-            report.errors.append(f"{path.name}: invalid mode {manifest['mode']!r}")
-            continue
-        if manifest["status"] not in STATUSES:
-            report.errors.append(f"{path.name}: invalid status {manifest['status']!r}")
+
+        error = _validate(path, manifest)
+        if error is not None:
+            report.errors.append(error)
             continue
         if manifest["id"] in seen:
             report.errors.append(
@@ -81,6 +92,44 @@ def load_plugins(plugins_dir: Path) -> LoadReport:
         seen[manifest["id"]] = path
         report.loaded.append(LoadedPlugin(manifest=manifest, provider=provider, path=path))
     return report
+
+
+def _read_manifest(path: Path, manifest_path: Path) -> str | None:
+    """只检查能不能解析。解析结果交给调用方，避免同一份 YAML 读两遍。"""
+    try:
+        yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        return f"{path.name}: invalid plugin.yaml ({exc})"
+    return None
+
+
+def _validate(path: Path, manifest: dict) -> str | None:
+    missing = [key for key in REQUIRED_FIELDS if key not in manifest]
+    if missing:
+        return f"{path.name}: missing field: {missing[0]}"
+    if manifest["id"] != path.name:
+        return f"{path.name}: id {manifest['id']!r} does not match directory name"
+    for key, allowed in (
+        ("mode", MODES),
+        ("status", STATUSES),
+        ("availability", AVAILABILITIES),
+    ):
+        if manifest[key] not in allowed:
+            options = "、".join(sorted(str(item) for item in allowed))
+            return f"{path.name}: invalid {key} {manifest[key]!r}，可选：{options}"
+    if manifest["picker"] not in PICKERS:
+        options = "、".join(sorted(str(item) for item in PICKERS))
+        return f"{path.name}: invalid picker {manifest['picker']!r}，可选：{options}"
+    if not isinstance(manifest["drape"], bool):
+        return f"{path.name}: drape must be true or false, got {manifest['drape']!r}"
+    if manifest["status"] == "skeleton" and manifest["availability"] != "skeleton":
+        return f"{path.name}: status 为 skeleton 时 availability 必须也是 skeleton"
+    if manifest["status"] == "implemented" and manifest["availability"] == "skeleton":
+        return f"{path.name}: availability 为 skeleton 时 status 应写 skeleton"
+    # 声明能铺到地球上，就得说得出交互方式，否则界面上不知道该问什么。
+    if manifest["drape"] and manifest["picker"] is None and manifest["availability"] == "ready":
+        return f"{path.name}: drape 为 true 时请声明 picker（template / extent / time）"
+    return None
 
 
 def _load_entrypoint(plugin_dir: Path, entrypoint: str) -> DataSourceProvider:

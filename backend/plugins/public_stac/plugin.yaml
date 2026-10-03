@@ -7,6 +7,7 @@ credentials: []
 license_note: "默认端点为 Element 84 Earth Search（AWS 开放数据上的 STAC）。集合可改。许可与署名以该数据集当时的官方说明为准。本插件不另存瓦片。"
 cache_allowed: false
 status: implemented
+availability: ready
 drape: true
 picker: extent
 endpoint: https://earth-search.aws.element84.com/v1

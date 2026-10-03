@@ -7,9 +7,7 @@ credentials: [tk]
 license_note: "须在天地图开发者平台申请 Key，只调用官方 WMTS。展示时按要求署名并标注审图号。不抓取瓦片。条款与额度以官网为准。"
 cache_allowed: false
 status: implemented
-entrypoint: provider:TiandituProvider
-
-# 有 Key 时才出现在「图层」弹层里；缺 Key 时 availability 为 needs_config，前端不列出。
-# 未申请 Key 之前不发出任何请求。
+availability: needs_config
 drape: true
 picker: template
+entrypoint: provider:TiandituProvider

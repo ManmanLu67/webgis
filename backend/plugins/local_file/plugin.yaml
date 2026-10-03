@@ -7,4 +7,7 @@ credentials: []
 license_note: "管理员自己上传的影像。"
 cache_allowed: true
 status: implemented
+availability: ready
+drape: false
+picker: null
 entrypoint: provider:LocalFileProvider

@@ -366,9 +366,16 @@ def _search_datetime(body: dict):
 
 
 def _provider_document(row: Provider, plugin=None) -> dict:
+    """数据源在界面上的样子。
+
+    `drape` / `picker` / `availability` 三项来自 manifest 且已由加载器校验。
+    前端整个弹层都建立在这三项上，所以这里只做"能不能真的用"的收紧：
+    骨架或未配置的源一律不进弹层（宪章 C4：没 Key 不请求）。
+    """
     manifest = plugin.manifest if plugin is not None else {}
     availability = _availability(row)
-    drape = bool(manifest.get("drape")) and availability == "ready" and row.status != "skeleton"
+    usable = availability == "ready" and row.status != "skeleton"
+    drape = bool(manifest.get("drape")) and usable
     return {
         "id": row.id,
         "name": row.name,
