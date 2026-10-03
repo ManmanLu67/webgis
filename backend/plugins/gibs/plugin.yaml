@@ -1,0 +1,12 @@
+id: gibs
+name: NASA GIBS
+version: 0.1.0
+mode: reference
+capabilities: [search, temporal]
+credentials: []
+license_note: "NASA GIBS / EOSDIS 全球每日影像，官方 WMTS。使用条款与额度以 NASA 当前说明为准。浏览器直接引用，本平台不另存瓦片。"
+cache_allowed: false
+status: implemented
+drape: true
+picker: time
+entrypoint: provider:GibsProvider

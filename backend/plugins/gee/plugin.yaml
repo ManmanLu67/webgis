@@ -1,0 +1,10 @@
+id: gee
+name: 地球引擎
+version: 0.1.0
+mode: reference
+capabilities: [search]
+credentials: [service_account]
+license_note: "需要 Google Earth Engine 账号。未配置前不发出请求。条款以 Google 官方说明为准。"
+cache_allowed: false
+status: implemented
+entrypoint: provider:GeeProvider

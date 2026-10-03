@@ -1,0 +1,39 @@
+[project]
+name = "webgis-backend"
+version = "0.1.0"
+description = "Catalog and provider API for the remote-sensing globe"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.14",
+  "fastapi>=0.115",
+  "fsspec>=2024.10",
+  "geoalchemy2>=0.16",
+  "httpx>=0.28",
+  "pydantic-settings>=2.6",
+  "python-multipart>=0.0.17",
+  "pystac>=1.11",
+  "pyyaml>=6",
+  "sqlalchemy>=2.0",
+  "uvicorn>=0.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "ruff>=0.8"]
+postgres = ["psycopg[binary]>=3.2"]
+gdal = ["rasterio>=1.4"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

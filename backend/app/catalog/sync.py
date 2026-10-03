@@ -1,0 +1,80 @@
+import json
+
+from sqlalchemy.orm import Session
+
+from app.models import Collection, Item, Provider
+from app.plugins.loader import LoadReport
+
+
+def sync_catalog(session: Session, report: LoadReport) -> None:
+    for plugin in report.loaded:
+        manifest = plugin.manifest
+        row = session.get(Provider, manifest["id"])
+        if row is None:
+            row = Provider(
+                id=manifest["id"],
+                name=manifest["name"],
+                mode=manifest["mode"],
+                status=manifest["status"],
+                config_json=_config_json(plugin),
+                enabled=True,
+                license_note=str(manifest["license_note"]),
+                cache_allowed=bool(manifest["cache_allowed"]),
+                error=None,
+            )
+            session.add(row)
+        else:
+            row.name = manifest["name"]
+            row.mode = manifest["mode"]
+            row.status = manifest["status"]
+            row.license_note = str(manifest["license_note"])
+            row.cache_allowed = bool(manifest["cache_allowed"])
+            row.error = None
+            row.config_json = _config_json(plugin)
+        if manifest["status"] != "implemented" or "search" not in set(manifest["capabilities"]):
+            continue
+        try:
+            found_items = plugin.provider.search(None, None, {})
+        except NotImplementedError:
+            continue
+        for found in found_items:
+            upsert_found(session, manifest["id"], found)
+    session.commit()
+
+
+def upsert_found(session: Session, provider_id: str, found) -> None:
+    collection = session.get(Collection, found.collection_id)
+    if collection is None:
+        session.add(
+            Collection(
+                id=found.collection_id,
+                provider_id=provider_id,
+                title=found.collection_title,
+                description="",
+            )
+        )
+        session.flush()
+    if session.get(Item, found.id) is None:
+        session.add(
+            Item(
+                id=found.id,
+                collection_id=found.collection_id,
+                minx=found.minx,
+                miny=found.miny,
+                maxx=found.maxx,
+                maxy=found.maxy,
+                acquired_at=found.acquired_at,
+                cloud_cover=found.cloud_cover,
+                asset_href=found.asset_href,
+                access_mode=found.access_mode,
+            )
+        )
+
+
+def _config_json(plugin) -> str:
+    availability = getattr(plugin.provider, "availability", "ready")
+    if plugin.manifest["status"] == "skeleton":
+        availability = "skeleton"
+    return json.dumps(
+        {"availability": availability, "credentials": plugin.manifest["credentials"]}
+    )

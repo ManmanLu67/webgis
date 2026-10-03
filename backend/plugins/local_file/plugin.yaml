@@ -1,0 +1,10 @@
+id: local_file
+name: 本地文件
+version: 0.1.0
+mode: ingest
+capabilities: [search, ingest]
+credentials: []
+license_note: "管理员自己上传的影像。"
+cache_allowed: true
+status: implemented
+entrypoint: provider:LocalFileProvider

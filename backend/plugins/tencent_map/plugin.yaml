@@ -1,0 +1,10 @@
+id: tencent_map
+name: 腾讯地图
+version: 0.1.0
+mode: reference
+capabilities: [search]
+credentials: [key]
+license_note: "腾讯位置服务官方 SDK / JS API，需申请 Key。这是电子地图，不是遥感影像。不把瓦片取进 Cesium。坐标系为 GCJ-02，不能当作 WGS84 直接叠加。条款以官网为准。"
+cache_allowed: false
+status: implemented
+entrypoint: provider:TencentMapProvider

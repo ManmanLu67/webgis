@@ -1,0 +1,10 @@
+id: sample_ingest
+name: 示例入库
+version: 0.1.0
+mode: ingest
+capabilities: [search, ingest]
+credentials: []
+license_note: "合成演示记录，不是第三方数据。"
+cache_allowed: true
+status: implemented
+entrypoint: provider:IngestProvider

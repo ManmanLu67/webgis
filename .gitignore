@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.db
+*.egg-info/
+backend/data/
+.venv/
+node_modules/
+dist/
+.env
+.env.local
+frontend/.env.local
+backend/.env.local
+
+# spec-kit 的机器本地状态
+.specify/feature.json
+.specify/extensions/*/local-config.yml
+
+# 编辑器
+.idea/
+.vscode/
+*.swp

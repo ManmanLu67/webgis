@@ -1,0 +1,90 @@
+openapi: 3.1.0
+info:
+  title: 目录接口
+  version: 0.1.0
+paths:
+  /providers:
+    get:
+      summary: 列出数据源
+      parameters:
+        - in: query
+          name: include_disabled
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: 已加载的数据源
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Provider" }
+  /items:
+    get:
+      summary: 按 STAC 要素集合检索目录条目
+      parameters:
+        - in: query
+          name: bbox
+          description: 最小经度,最小纬度,最大经度,最大纬度
+          schema: { type: string }
+        - in: query
+          name: datetime
+          description: STAC 时间区间，start/end、start/.. 或 ../end
+          schema: { type: string }
+        - in: query
+          name: cloud_cover_lt
+          schema: { type: number }
+      responses:
+        "200":
+          description: STAC 要素集合
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeatureCollection" }
+        "400":
+          description: 范围或时间无效
+  /items/{item_id}/layer:
+    get:
+      summary: 引用条目或入库条目的共用图层描述
+      parameters:
+        - in: query
+          name: publisher
+          schema: { type: string }
+      responses:
+        "200":
+          description: 图层文档
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Layer" }
+        "404":
+          description: 未知条目
+components:
+  schemas:
+    Provider:
+      type: object
+      required: [id, name, mode, status, enabled]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        mode: { type: string, enum: [reference, ingest] }
+        status: { type: string, enum: [implemented, skeleton, error] }
+        enabled: { type: boolean }
+        license_note: { type: string }
+        cache_allowed: { type: boolean }
+        error: { type: string, nullable: true }
+    Layer:
+      type: object
+      required: [id, type, url, style, time_dimension]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [wmts, xyz, cog, terrain, 3dtiles] }
+        url: { type: string }
+        style: { type: object, additionalProperties: true }
+        time_dimension: { type: string, nullable: true }
+        publisher_id: { type: string }
+    FeatureCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { type: string, const: FeatureCollection }
+        features:
+          type: array
+          items: { type: object }

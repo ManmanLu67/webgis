@@ -1,0 +1,36 @@
+openapi: 3.1.0
+info:
+  title: 标注
+  version: 0.1.0
+paths:
+  /annotations:
+    get:
+      summary: 导出全部标注为 GeoJSON
+      responses:
+        "200":
+          description: GeoJSON 要素集合
+    post:
+      summary: 保存一条标注
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [geometry]
+              properties:
+                geometry: { type: object }
+                properties: { type: object }
+      responses:
+        "201":
+          description: 已保存的要素
+        "400":
+          description: 几何不合法
+  /annotations/{annotation_id}:
+    delete:
+      summary: 删除一条标注
+      responses:
+        "204":
+          description: 已删除
+        "404":
+          description: 未知标注

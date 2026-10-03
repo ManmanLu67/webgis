@@ -1,0 +1,10 @@
+id: tianditu
+name: 天地图
+version: 0.1.0
+mode: reference
+capabilities: [search]
+credentials: [tk]
+license_note: "须在天地图开发者平台申请 Key，只调用官方 WMTS。展示时按要求署名并标注审图号。不抓取瓦片。条款与额度以官网为准。"
+cache_allowed: false
+status: implemented
+entrypoint: provider:TiandituProvider

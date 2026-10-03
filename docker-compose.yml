@@ -1,0 +1,22 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: webgis
+      POSTGRES_PASSWORD: webgis
+      POSTGRES_DB: webgis
+    ports:
+      - "5432:5432"
+  api:
+    build: ./backend
+    environment:
+      WEBGIS_DATABASE_URL: postgresql+psycopg://webgis:webgis@postgis:5432/webgis
+      WEBGIS_WORKER_ENABLED: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgis
+  web:
+    build: ./frontend
+    ports:
+      - "4173:4173"

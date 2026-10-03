@@ -1,0 +1,63 @@
+openapi: 3.1.0
+info:
+  title: 入库任务
+  version: 0.1.0
+paths:
+  /jobs/uploads:
+    post:
+      summary: 将 GeoTIFF 入库排入队列
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, acquired_at]
+              properties:
+                file: { type: string, format: binary }
+                acquired_at: { type: string, format: date-time }
+      responses:
+        "202":
+          description: 任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+  /jobs/{job_id}:
+    get:
+      summary: 读取任务状态
+      responses:
+        "200":
+          description: 任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "404":
+          description: 未知任务
+  /tiles/timing:
+    get:
+      summary: 一次瓦片耗时采样
+      responses:
+        "200":
+          description: 计时。未配置缓存时 cache 为 none
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [duration_ms, cache]
+                properties:
+                  duration_ms: { type: number }
+                  cache: { type: string, enum: [none] }
+components:
+  schemas:
+    Job:
+      type: object
+      required: [id, type, status, progress, created_at, updated_at]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        status: { type: string, enum: [queued, running, success, failed] }
+        progress: { type: number }
+        error: { type: string, nullable: true }
+        payload: { type: object }
+        created_at: { type: string }
+        updated_at: { type: string }

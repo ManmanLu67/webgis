@@ -1,0 +1,514 @@
+<script setup lang="ts">
+import { computed, ref } from "vue"
+import type { Bookmark } from "./map/bookmarks"
+import { type CatalogSource, layerPickerSources } from "./map/drapeSources"
+import { parseLayerDate } from "./map/layerDate"
+import { groupLayers, type ManagedLayer } from "./map/layers"
+import { sceneOptionLabel, type SwipeScene } from "./map/swipe"
+
+type TimeChoice = { id: string; title: string; time: string }
+
+const props = defineProps<{
+  layers: ManagedLayer[]
+  message: string
+  measureText: string
+  bookmarks: Bookmark[]
+  sources: CatalogSource[]
+  scenes: SwipeScene[]
+  tilesetConfigured: boolean
+  sketching: boolean
+}>()
+
+const emit = defineEmits<{
+  visible: [id: string, value: boolean]
+  opacity: [id: string, value: number]
+  move: [id: string, direction: "up" | "down"]
+  remove: [id: string]
+  sketch: [kind: string]
+  finish: []
+  exportGeojson: []
+  copy: []
+  fly: [lon: number, lat: number]
+  flyExtent: []
+  saveBookmark: [name: string, lon: number, lat: number]
+  useBookmark: [bookmark: Bookmark]
+  customXyz: [template: { name: string; url_template: string; tiling_scheme: string; max_zoom: number; layer_kind: string; time: string }]
+  loadSource: [payload: { id: string; name: string; datetime?: string; bbox?: number[] }]
+  home: []
+}>()
+
+const imageryOn = defineModel<boolean>("imageryOn", { default: true })
+const terrainOn = defineModel<boolean>("terrainOn", { default: true })
+const tilesetOn = defineModel<boolean>("tilesetOn", { default: true })
+const opacity = defineModel<number>("opacity", { default: 1 })
+const screenError = defineModel<number>("screenError", { default: 16 })
+const swipeOn = defineModel<boolean>("swipeOn", { default: false })
+const leftId = defineModel<string>("leftId", { default: "" })
+const rightId = defineModel<string>("rightId", { default: "" })
+const xyzName = defineModel<string>("xyzName", { default: "" })
+const xyzUrl = defineModel<string>("xyzUrl", { default: "" })
+const xyzScheme = defineModel<string>("xyzScheme", { default: "WebMercator" })
+const xyzKind = defineModel<string>("xyzKind", { default: "imagery" })
+const xyzZoom = defineModel<number>("xyzZoom", { default: 18 })
+const xyzTime = defineModel<string>("xyzTime", { default: "" })
+const lon = defineModel<number>("lon", { default: 116 })
+const lat = defineModel<number>("lat", { default: 40 })
+const bookmarkName = defineModel<string>("bookmarkName", { default: "" })
+
+const openSection = ref("view")
+const openGroup = ref<string | null>(null)
+const selectedLayer = ref<string | null>(null)
+const pickerOpen = ref(false)
+const pickerStep = ref<"sources" | "extent" | "time" | "template">("sources")
+const picked = ref<CatalogSource | null>(null)
+const times = ref<TimeChoice[]>([])
+const selectedTime = ref("")
+const pickerError = ref("")
+const west = ref("")
+const south = ref("")
+const east = ref("")
+const north = ref("")
+const customDate = ref("")
+
+const sections = [
+  { id: "view", label: "视图" },
+  { id: "layers", label: "图层" },
+  { id: "draw", label: "标注" },
+  { id: "measure", label: "量算" },
+  { id: "place", label: "定位" },
+]
+
+const pickerSources = computed(() => layerPickerSources(props.sources))
+
+function toggleSection(id: string): void {
+  const opening = openSection.value !== id
+  openSection.value = opening ? id : ""
+  openGroup.value = null
+  selectedLayer.value = null
+  pickerOpen.value = opening && id === "layers"
+  resetPicker()
+}
+
+function resetPicker(): void {
+  pickerStep.value = "sources"
+  picked.value = null
+  times.value = []
+  selectedTime.value = ""
+  customDate.value = ""
+  pickerError.value = ""
+}
+
+function openPicker(): void {
+  pickerOpen.value = true
+  resetPicker()
+}
+
+function toggleGroup(name: string): void {
+  openGroup.value = openGroup.value === name ? null : name
+  selectedLayer.value = null
+}
+
+function toggleLayer(id: string): void {
+  selectedLayer.value = selectedLayer.value === id ? null : id
+}
+
+function extentBbox(): number[] | null {
+  const raw = [west.value, south.value, east.value, north.value]
+  if (raw.some((value) => value.trim() === "")) return null
+  const [minx, miny, maxx, maxy] = raw.map(Number)
+  if ([minx, miny, maxx, maxy].some((value) => Number.isNaN(value))) return null
+  if (minx >= maxx || miny >= maxy) return null
+  return [minx, miny, maxx, maxy]
+}
+
+async function chooseSource(source: CatalogSource): Promise<void> {
+  picked.value = source
+  pickerError.value = ""
+  if (source.picker === "template") {
+    pickerStep.value = "template"
+    return
+  }
+  if (source.picker === "extent") {
+    pickerStep.value = "extent"
+    return
+  }
+  await loadTimes()
+}
+
+async function loadTimes(): Promise<void> {
+  if (!picked.value) return
+  const bbox = picked.value.picker === "extent" ? extentBbox() : null
+  if (picked.value.picker === "extent" && !bbox) {
+    pickerError.value = "公开目录检索需要范围"
+    return
+  }
+  pickerError.value = ""
+  const body: Record<string, unknown> = { limit: 12 }
+  if (bbox) body.bbox = bbox
+  try {
+    const response = await fetch(`/api/providers/${picked.value.id}/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      pickerError.value = typeof payload.detail === "string" ? payload.detail : "检索失败"
+      return
+    }
+    times.value = payload.items ?? []
+    selectedTime.value = times.value[0]?.time ?? ""
+    if (!times.value.length) {
+      pickerError.value = "没有可加载的图层"
+      return
+    }
+    pickerStep.value = "time"
+  } catch {
+    pickerError.value = "目录未连接"
+  }
+}
+
+function confirmTime(): void {
+  if (!picked.value) return
+  const typed = customDate.value.trim()
+  const datetime = typed ? parseLayerDate(typed) : selectedTime.value
+  if (typed && !datetime) {
+    pickerError.value = "时间写成 年-月-日，例如 2026-09-23"
+    return
+  }
+  if (!datetime) return
+  const bbox = picked.value.picker === "extent" ? extentBbox() ?? undefined : undefined
+  emit("loadSource", {
+    id: picked.value.id,
+    name: picked.value.name,
+    datetime,
+    bbox,
+  })
+  pickerOpen.value = false
+  resetPicker()
+}
+
+function submitCustom(): void {
+  emit("customXyz", {
+    name: xyzName.value,
+    url_template: xyzUrl.value,
+    tiling_scheme: xyzScheme.value,
+    max_zoom: xyzZoom.value,
+    layer_kind: xyzKind.value,
+    time: xyzTime.value,
+  })
+  pickerOpen.value = false
+  resetPicker()
+}
+</script>
+
+<template>
+  <aside class="dock">
+    <header class="brand">
+      <button type="button" class="home" aria-label="回到初始视角" title="回到初始视角" @click="emit('home')">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <ellipse cx="12" cy="12" rx="4" ry="9" fill="none" stroke="currentColor" stroke-width="1.4" />
+          <path d="M3 12h18M4.5 8h15M4.5 16h15" fill="none" stroke="currentColor" stroke-width="1.2" />
+        </svg>
+      </button>
+      <strong>遥感地球</strong>
+    </header>
+
+    <div v-for="section in sections" :key="section.id" class="block">
+      <button type="button" class="section" :aria-expanded="openSection === section.id" @click="toggleSection(section.id)">
+        <span>{{ section.label }}</span>
+        <span class="chev" :class="{ open: openSection === section.id }"></span>
+      </button>
+
+      <div v-if="openSection === section.id" class="body">
+        <template v-if="section.id === 'view'">
+          <label class="check"><input v-model="imageryOn" type="checkbox" /> 影像</label>
+          <label class="field">透明度 <input v-model.number="opacity" type="range" min="0" max="1" step="0.05" /></label>
+          <label class="check"><input v-model="terrainOn" type="checkbox" /> 地形</label>
+          <label v-if="tilesetConfigured" class="check">
+            <input v-model="tilesetOn" type="checkbox" />
+            三维瓦片
+          </label>
+          <label v-if="tilesetConfigured" class="field">
+            屏幕误差 <input v-model.number="screenError" type="range" min="1" max="64" step="1" />
+          </label>
+          <p class="muted">帧率 <span id="fps"></span></p>
+          <label class="check"><input v-model="swipeOn" type="checkbox" /> 卷帘</label>
+          <div v-if="swipeOn" class="nest">
+            <label class="field">左侧
+              <select v-model="leftId">
+                <option v-for="scene in scenes" :key="scene.id" :value="scene.id">{{ sceneOptionLabel(scene) }}</option>
+              </select>
+            </label>
+            <label class="field">右侧
+              <select v-model="rightId">
+                <option v-for="scene in scenes" :key="'r-' + scene.id" :value="scene.id">{{ sceneOptionLabel(scene) }}</option>
+              </select>
+            </label>
+          </div>
+        </template>
+
+        <template v-else-if="section.id === 'layers'">
+          <div v-if="pickerOpen" class="picker">
+            <template v-if="pickerStep === 'sources'">
+              <p v-if="pickerSources.length === 0" class="muted">没有可铺到地球的数据源</p>
+              <ul v-else class="source-list">
+                <li v-for="source in pickerSources" :key="source.id">
+                  <button type="button" class="link" @click="chooseSource(source)">{{ source.name }}</button>
+                </li>
+              </ul>
+            </template>
+            <template v-else-if="pickerStep === 'extent'">
+              <p class="muted">{{ picked?.name }} 需要地图范围</p>
+              <label class="field">西 <input v-model="west" type="number" step="any" /></label>
+              <label class="field">南 <input v-model="south" type="number" step="any" /></label>
+              <label class="field">东 <input v-model="east" type="number" step="any" /></label>
+              <label class="field">北 <input v-model="north" type="number" step="any" /></label>
+              <div class="actions">
+                <button type="button" class="primary" @click="loadTimes">检索时间</button>
+                <button type="button" @click="pickerStep = 'sources'">返回</button>
+              </div>
+            </template>
+            <template v-else-if="pickerStep === 'time'">
+              <p class="muted">{{ picked?.name }}</p>
+              <label v-for="(item, index) in times" :key="item.id" class="check">
+                <span>
+                  <input v-model="selectedTime" type="radio" name="layer-time" :value="item.time" />
+                  {{ index === 0 ? "最近 · " : "" }}{{ item.time }}
+                </span>
+              </label>
+              <label class="field">自选
+                <input v-model="customDate" type="text" placeholder="年-月-日" />
+              </label>
+              <div class="actions">
+                <button type="button" class="primary" @click="confirmTime">显示</button>
+                <button type="button" @click="pickerStep = picked?.picker === 'extent' ? 'extent' : 'sources'">返回</button>
+              </div>
+            </template>
+            <form v-else class="nest" @submit.prevent="submitCustom">
+              <p class="muted">只填写你有权使用的地址。底图和地形不在这里。</p>
+              <label class="field">名称 <input v-model="xyzName" type="text" /></label>
+              <label class="field">模板 <input v-model="xyzUrl" type="text" placeholder="https://…/{z}/{x}/{y}.png" /></label>
+              <label class="field">投影
+                <select v-model="xyzScheme">
+                  <option value="WebMercator">墨卡托</option>
+                  <option value="Geographic">经纬度</option>
+                </select>
+              </label>
+              <label class="field">种类
+                <select v-model="xyzKind">
+                  <option value="imagery">影像</option>
+                  <option value="map">普通地图</option>
+                </select>
+              </label>
+              <label class="field">最大级别 <input v-model.number="xyzZoom" type="number" min="0" max="24" /></label>
+              <label class="field">时间 <input v-model="xyzTime" type="text" placeholder="含 {time} 时填写" /></label>
+              <div class="actions">
+                <button type="submit" class="primary">显示</button>
+                <button type="button" @click="pickerStep = 'sources'">返回</button>
+              </div>
+            </form>
+            <p v-if="pickerError" class="hint">{{ pickerError }}</p>
+            <button type="button" class="text-btn" @click="pickerOpen = false">收起</button>
+          </div>
+          <button v-else type="button" class="text-btn" @click="openPicker">添加图层</button>
+          <div v-for="bucket in groupLayers(layers)" :key="bucket.group" class="group">
+            <button type="button" class="group-btn" @click="toggleGroup(bucket.group)">
+              <span>{{ bucket.group }}</span>
+            </button>
+            <div v-if="openGroup === bucket.group" class="nest">
+              <div v-for="layer in bucket.layers" :key="layer.id" class="layer">
+                <button type="button" class="layer-name" @click="toggleLayer(layer.id)">
+                  <input type="checkbox" :checked="layer.visible" @click.stop @change="emit('visible', layer.id, ($event.target as HTMLInputElement).checked)" />
+                  {{ layer.name }}
+                </button>
+                <div v-if="selectedLayer === layer.id" class="detail">
+                  <label class="field">透明度
+                    <input type="range" min="0" max="1" step="0.05" :value="layer.opacity" @input="emit('opacity', layer.id, Number(($event.target as HTMLInputElement).value))" />
+                  </label>
+                  <div class="actions">
+                    <button type="button" @click="emit('move', layer.id, 'up')">上移</button>
+                    <button type="button" @click="emit('move', layer.id, 'down')">下移</button>
+                    <button type="button" @click="emit('flyExtent')">范围</button>
+                    <button type="button" class="danger" @click="emit('remove', layer.id)">删除</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="section.id === 'draw'">
+          <div class="actions">
+            <button type="button" @click="emit('sketch', 'point')">点</button>
+            <button type="button" @click="emit('sketch', 'line')">线</button>
+            <button type="button" @click="emit('sketch', 'polygon')">面</button>
+          </div>
+          <p v-if="sketching" class="hint">在地球上单击取点，然后按完成</p>
+          <div class="actions">
+            <button type="button" class="primary" @click="emit('finish')">完成</button>
+            <button type="button" @click="emit('exportGeojson')">导出</button>
+          </div>
+        </template>
+
+        <template v-else-if="section.id === 'measure'">
+          <div class="actions">
+            <button type="button" @click="emit('sketch', 'distance')">距离</button>
+            <button type="button" @click="emit('sketch', 'area')">面积</button>
+            <button type="button" @click="emit('sketch', 'height')">高度</button>
+          </div>
+          <p v-if="sketching" class="hint">在地球上单击取点，然后按完成</p>
+          <div class="actions">
+            <button type="button" class="primary" @click="emit('finish')">完成</button>
+          </div>
+          <p v-if="measureText" class="result">{{ measureText }}</p>
+          <button type="button" class="primary" :disabled="!measureText" @click="emit('copy')">复制结果</button>
+        </template>
+
+        <template v-else>
+          <label class="field">经度 <input v-model.number="lon" type="number" /></label>
+          <label class="field">纬度 <input v-model.number="lat" type="number" /></label>
+          <button type="button" class="primary" @click="emit('fly', lon, lat)">飞行</button>
+          <label class="field">书签 <input v-model="bookmarkName" type="text" /></label>
+          <button type="button" @click="emit('saveBookmark', bookmarkName, lon, lat)">保存当前位置</button>
+          <ul v-if="bookmarks.length" class="source-list">
+            <li v-for="bookmark in bookmarks" :key="bookmark.name">
+              <button type="button" class="link" @click="emit('useBookmark', bookmark)">{{ bookmark.name }}</button>
+            </li>
+          </ul>
+        </template>
+      </div>
+    </div>
+
+    <p v-if="sketching && openSection !== 'draw' && openSection !== 'measure'" class="hint">在地球上单击取点，然后按完成</p>
+    <p v-else-if="message" class="hint">{{ message }}</p>
+  </aside>
+</template>
+
+<style scoped>
+.dock {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 2;
+  width: 300px;
+  max-height: calc(100% - 72px);
+  overflow: auto;
+  padding: 12px;
+  color: #e8eef2;
+  background: rgba(12, 18, 24, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  font: 13px/1.45 "Segoe UI", sans-serif;
+}
+.brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.brand strong { font-size: 15px; }
+.home {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: #3dbea5;
+  background: none;
+  border: 0;
+  border-radius: 99px;
+  cursor: pointer;
+}
+.home:hover { background: rgba(61, 190, 165, 0.16); }
+.block + .block { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.section {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 11px 4px;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.chev {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid #9ab;
+  border-bottom: 1.5px solid #9ab;
+  transform: rotate(-45deg);
+}
+.chev.open { transform: rotate(45deg); }
+.body { padding: 0 4px 12px; display: flex; flex-direction: column; gap: 8px; }
+.nest {
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(61, 190, 165, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.check, .field { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.field input, .field select, button { font: inherit; }
+.field input[type="text"], .field input[type="number"], .field select {
+  width: 168px;
+  padding: 4px 6px;
+  color: #14202a;
+  background: #f4f7f8;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color-scheme: light;
+}
+.field option {
+  color: #14202a;
+  background: #f4f7f8;
+}
+.field option {
+  color: #14202a;
+  background: #f4f7f8;
+}
+.group-btn, .layer-name, .text-btn, .link {
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.group-btn { display: flex; justify-content: space-between; padding: 6px 0; }
+.check em {
+  color: #8ea0ab;
+  font-style: normal;
+}
+.source-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.source-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center; }
+.key { width: 120px; color: #14202a; background: #f4f7f8; border: 0; border-radius: 6px; padding: 4px 6px; }
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.actions button, .primary, .danger {
+  padding: 4px 8px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.primary { background: #1f6f62; border-color: transparent; }
+.danger { color: #ffb4b4; }
+.muted, .hint { margin: 0; color: #8ea0ab; }
+.hint { margin-top: 8px; color: #f3ddaa; }
+.result { margin: 0; font-variant-numeric: tabular-nums; }
+</style>

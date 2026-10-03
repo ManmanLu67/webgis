@@ -1,0 +1,13 @@
+id: arcgis_wayback
+name: 历史版本
+version: 0.1.0
+mode: reference
+capabilities: [search, temporal]
+credentials: []
+license_note: "待确认：以 Esri Wayback 官方使用条款为准。只登记清单里已给出的瓦片地址，不另存瓦片。"
+cache_allowed: false
+status: implemented
+drape: true
+picker: time
+catalog_url: https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json
+entrypoint: provider:WaybackProvider

@@ -1,0 +1,10 @@
+id: beijing1
+name: 北京一号
+version: 0.1.0
+mode: ingest
+capabilities: [search, ingest]
+credentials: []
+license_note: "无授权与接口文档。不实现真实接口。用户可把影像交给本地文件。"
+cache_allowed: false
+status: skeleton
+entrypoint: provider:Beijing1Provider

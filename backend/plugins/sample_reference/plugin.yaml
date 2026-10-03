@@ -1,0 +1,10 @@
+id: sample_reference
+name: 示例引用
+version: 0.1.0
+mode: reference
+capabilities: [search, temporal]
+credentials: []
+license_note: "合成演示记录，不是第三方数据。"
+cache_allowed: false
+status: implemented
+entrypoint: provider:ReferenceProvider

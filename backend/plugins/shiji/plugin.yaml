@@ -1,0 +1,10 @@
+id: shiji
+name: 世纪空间
+version: 0.1.0
+mode: reference
+capabilities: [search]
+credentials: []
+license_note: "商业数据。没有授权与可公开引用的接口文档，不写真实请求。以官方说明为准。"
+cache_allowed: false
+status: skeleton
+entrypoint: provider:ShijiProvider

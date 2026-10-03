@@ -1,0 +1,12 @@
+id: custom_xyz
+name: 自定义 XYZ
+version: 0.1.0
+mode: reference
+capabilities: [search, temporal]
+credentials: []
+license_note: "只接受用户自备的合法瓦片地址。不内置任何第三方地图地址，也不提供从地图官网解析 URL 的功能。缓存与否由用户对所填地址的授权决定，默认不允许。"
+cache_allowed: false
+status: implemented
+drape: true
+picker: template
+entrypoint: provider:CustomXyzProvider

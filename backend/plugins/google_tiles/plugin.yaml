@@ -1,0 +1,10 @@
+id: google_tiles
+name: 官方地图瓦片
+version: 0.1.0
+mode: reference
+capabilities: [search]
+credentials: [api_key]
+license_note: "仅官方 Map Tiles API，需要密钥和署名。不抓取 Google Earth 瓦片。未配置前不发出请求。"
+cache_allowed: false
+status: implemented
+entrypoint: provider:GoogleTilesProvider
