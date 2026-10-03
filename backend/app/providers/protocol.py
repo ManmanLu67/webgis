@@ -34,9 +34,16 @@ class LayerSpec:
     # 数据基准。用于署名与合规声明，不参与渲染决策。
     crs: str = "EPSG:4326"
     attribution: str = ""
-    # WMTS：capabilities 文档地址与其中的 Layer 标识。
+    # WMTS：两种编码都要能描述。
+    # RESTful 给了瓦片模板；KVP 只给基地址，其余靠下面的字段补齐
+    # （天地图就是 KVP，且要求 VERSION=1.0.0 与 FORMAT=tiles）。
     wmts_capabilities: str | None = None
     wmts_layer: str | None = None
+    wmts_tile_template: str | None = None
+    wmts_style: str = "default"
+    wmts_tile_matrix_set_id: str = "WebMercatorQuad"
+    wmts_format: str = "image/png"
+    wmts_dimensions: dict[str, str] | None = None
     # 需要在展示时说清的重投影 / 基准差异。
     georeference_note: str = ""
 

@@ -107,9 +107,37 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
 
 export type SketchKind = "point" | "line" | "polygon" | "distance" | "area" | "height"
 
-export interface GeoGeometry {
-  type: "Point" | "LineString" | "Polygon"
-  coordinates: number[] | number[][] | number[][][]
+/**
+ * 可辨识联合：按 `type` 就能收窄出对应的坐标层级。
+ * 之前写成一个带联合坐标的接口，结果处处要 `as number[][]`，
+ * 编译器也没法在拼实体的时候替你把关。
+ */
+export type GeoGeometry =
+  | { type: "Point"; coordinates: number[] }
+  | { type: "LineString"; coordinates: number[][] }
+  | { type: "Polygon"; coordinates: number[][][] }
+
+const GEOMETRY_TYPES: ReadonlySet<string> = new Set(["Point", "LineString", "Polygon"])
+
+/**
+ * 接口回来的 JSON 是 `any`，直接喂给 `showAnnotation` 会把没验证过的数据
+ * 当成合法几何。这里按后端 `app/annotations.py` 的同一套规则收窄——
+ * 点至少两个坐标、线至少两个点、面至少四个位置。
+ */
+export function asGeoGeometry(value: unknown): GeoGeometry | null {
+  if (typeof value !== "object" || value === null) return null
+  const candidate = value as { type?: unknown; coordinates?: unknown }
+  if (typeof candidate.type !== "string" || !GEOMETRY_TYPES.has(candidate.type)) return null
+  if (!Array.isArray(candidate.coordinates)) return null
+  const minimum = candidate.type === "Point" ? 2 : candidate.type === "LineString" ? 2 : 4
+  if (candidate.coordinates.length < minimum) return null
+  if (candidate.type === "Point") {
+    return { type: "Point", coordinates: candidate.coordinates as number[] }
+  }
+  if (candidate.type === "LineString") {
+    return { type: "LineString", coordinates: candidate.coordinates as number[][] }
+  }
+  return { type: "Polygon", coordinates: candidate.coordinates as number[][][] }
 }
 
 export interface SketchResult {
@@ -209,7 +237,7 @@ function geometryOf(kind: SketchKind | null, samples: LonLat[]): GeoGeometry | n
 
 function entityFromGeometry(id: string, geometry: GeoGeometry): Cesium.Entity.ConstructorOptions {
   if (geometry.type === "Point") {
-    const [lon, lat, height] = geometry.coordinates as number[]
+    const [lon, lat, height] = geometry.coordinates
     return {
       id,
       position: Cesium.Cartesian3.fromDegrees(lon, lat, height ?? 0),
@@ -220,13 +248,13 @@ function entityFromGeometry(id: string, geometry: GeoGeometry): Cesium.Entity.Co
     return {
       id,
       polyline: {
-        positions: Cesium.Cartesian3.fromDegreesArrayHeights((geometry.coordinates as number[][]).flat()),
+        positions: Cesium.Cartesian3.fromDegreesArrayHeights(geometry.coordinates.flat()),
         width: 2,
         material: Cesium.Color.CYAN,
       },
     }
   }
-  const ring = (geometry.coordinates as number[][][])[0]
+  const ring = geometry.coordinates[0]
   return {
     id,
     polygon: {

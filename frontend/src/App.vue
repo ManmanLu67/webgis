@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue"
+import { attributionOf, toMountableLayer, type WireLayerSpec } from "./api/layerSpec"
 import { resolveGlobeConfig } from "./config"
 import { configureCesium } from "./map/cesiumLayers"
-import { startGlobe, type GlobeHandles } from "./map/globe"
+import { asGeoGeometry, startGlobe, type GeoGeometry, type GlobeHandles } from "./map/globe"
 import { DEMO_SCENES, splitFromPointer, toLayerSpec, type SwipeScene } from "./map/swipe"
 import type { LayerHandle } from "./map/layerTypeRegistry"
 import { addBookmark, coordinateError, readBookmarks, writeBookmarks, type Bookmark } from "./map/bookmarks"
@@ -30,7 +31,7 @@ const bookmarks = ref<Bookmark[]>(readBookmarks())
 const flyLon = ref(116)
 const flyLat = ref(40)
 const bookmarkName = ref("北京")
-const annotations = ref<{ id?: string; geometry: { type: string; coordinates: unknown } }[]>([])
+const annotations = ref<{ id?: string; geometry: GeoGeometry }[]>([])
 const sources = ref<{ id: string; name: string; availability: string; drape: boolean; picker: "time" | "extent" | "template" | null }[]>([])
 const xyzName = ref("")
 const xyzUrl = ref("")
@@ -277,34 +278,30 @@ function layerName(item: { title: string; time?: string }): string {
 async function placeLoadedItem(
   sourceId: string,
   groupName: string,
-  item: { id: string; title: string; time?: string; bbox?: number[]; layer: { url: string; attribution?: string; tiling_scheme?: string; max_zoom?: number; crs?: string } },
+  item: { id: string; title: string; time?: string; bbox?: number[]; layer: WireLayerSpec },
 ): Promise<void> {
   if (!handles) return
-  const url = item.layer.url
+  const wire = item.layer
+  const url = wire.url ?? ""
+  const attribution = attributionOf(wire, item.title)
   let handle: LayerHandle
-  if (url.includes("{z}")) {
-    handle = await handles.mountSwipeSide(
-      {
-        id: item.id,
-        type: "xyz",
-        url,
-        attribution: item.layer.attribution,
-        tilingScheme: item.layer.tiling_scheme === "Geographic" ? "Geographic" : "WebMercator",
-        maxZoom: item.layer.max_zoom ?? undefined,
-        crs: item.layer.crs,
-      },
-      "none",
-    )
+  // 后端声明了什么类型就用什么类型：xyz 是瓦片模板、wmts 读 capabilities 或
+  // KVP 基地址、cog 是单幅影像。不再一律当 XYZ 模板套，那样 WMTS 是假挂载。
+  const declaredType = wire.type
+  if (declaredType === "wmts" && (wire.wmts_capabilities || wire.wmts_layer)) {
+    handle = await handles.mountSwipeSide(toMountableLayer(wire, item.id), "none")
     if (!scenes.value.some((scene) => scene.id === item.id)) {
       scenes.value = [
         ...scenes.value,
-        {
-          id: item.id,
-          source: sourceId === "arcgis_wayback" ? "wayback" : "stac",
-          timeLabel: item.title,
-          url,
-          attribution: item.layer.attribution || item.title,
-        },
+        { id: item.id, source: sourceId === "arcgis_wayback" ? "wayback" : "stac", timeLabel: item.title, url, attribution },
+      ]
+    }
+  } else if (url.includes("{z}") || url.includes("{TileMatrix}")) {
+    handle = await handles.mountSwipeSide(toMountableLayer(wire, item.id), "none")
+    if (!scenes.value.some((scene) => scene.id === item.id)) {
+      scenes.value = [
+        ...scenes.value,
+        { id: item.id, source: sourceId === "arcgis_wayback" ? "wayback" : "stac", timeLabel: item.title, url, attribution },
       ]
     }
   } else if (item.bbox && item.bbox.length === 4 && /\.(png|jpe?g)(\?|$)/i.test(url)) {
@@ -342,18 +339,11 @@ async function onCustomXyz(template: {
     }
     const item = body.items?.[0]
     if (!item || !handles) return
-    const layer = item.layer
     const handle = await handles.mountSwipeSide(
       {
-        id: item.id,
-        type: "xyz",
-        url: layer.url,
+        ...toMountableLayer(item.layer, item.id),
+        // 自定义地址的授权由用户自己负责，署名不该由平台代填。
         attribution: "用户自备地址",
-        tilingScheme: layer.tiling_scheme,
-        maxZoom: layer.max_zoom ?? undefined,
-        layerKind: layer.layer_kind,
-        urlTemplate: layer.url_template ?? undefined,
-        crs: layer.crs,
       },
       "none",
     )
@@ -399,10 +389,16 @@ async function loadAnnotations(): Promise<void> {
     const response = await fetch("/api/annotations")
     if (!response.ok) return
     const body = await response.json()
-    annotations.value = body.features ?? []
-    for (const feature of annotations.value) {
-      if (feature.id && feature.geometry) handles?.showAnnotation(String(feature.id), feature.geometry)
+    const features: unknown[] = Array.isArray(body?.features) ? body.features : []
+    const loaded: { id?: string; geometry: GeoGeometry }[] = []
+    for (const feature of features) {
+      const geometry = asGeoGeometry((feature as { geometry?: unknown }).geometry)
+      if (!geometry) continue
+      const id = (feature as { id?: unknown }).id
+      loaded.push({ id: id === undefined ? undefined : String(id), geometry })
+      handles?.showAnnotation(String(id), geometry)
     }
+    annotations.value = loaded
   } catch {
     toolMessage.value = ""
   }

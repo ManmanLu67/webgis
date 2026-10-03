@@ -187,6 +187,12 @@ def cog_templates(
     return {
         "xyz": f"{base}/tiles/{tile_matrix_set}/{{z}}/{{x}}/{{y}}.png?url={href}",
         "wmts_capabilities": f"{base}/WMTSCapabilities.xml?url={href}&use_epsg=true",
+        # WMTS 的 ResourceURL 是 RESTful 模板。WebMercatorQuad 下
+        # {TileMatrix}/{TileCol}/{TileRow} 与 {z}/{x}/{y} 逐一对应。
+        # tests/test_tile_service.py 里有一项断言它与 capabilities 文档里写的模板一致。
+        "wmts_tile_template": (
+            f"{base}/tiles/{tile_matrix_set}/{{TileMatrix}}/{{TileCol}}/{{TileRow}}.png?url={href}"
+        ),
         "wmts_layer": wmts_layer_identifier(identifier, tile_matrix_set),
         "preview": f"{base}/preview?url={href}",
     }

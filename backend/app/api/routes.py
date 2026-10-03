@@ -305,6 +305,11 @@ def _layer_payload(spec, license_note: str = "") -> dict:
         "license_note": license_note,
         "wmts_capabilities": spec.wmts_capabilities,
         "wmts_layer": spec.wmts_layer,
+        "wmts_tile_template": spec.wmts_tile_template,
+        "wmts_style": spec.wmts_style,
+        "wmts_tile_matrix_set_id": spec.wmts_tile_matrix_set_id,
+        "wmts_format": spec.wmts_format,
+        "wmts_dimensions": spec.wmts_dimensions,
         "georeference_note": spec.georeference_note,
         "variants": [],
     }

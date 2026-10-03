@@ -32,6 +32,8 @@ describe("图层类型注册表", () => {
           setShow() {},
           setOpacity() {},
           setMaximumScreenSpaceError() {},
+          setSplit() {},
+          remove() {},
         }
       },
     }))

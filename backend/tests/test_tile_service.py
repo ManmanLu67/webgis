@@ -126,6 +126,34 @@ def test_templates_follow_a_custom_prefix():
     assert templates["xyz"].startswith("/tiles/tiles/WebMercatorQuad/")
 
 
+def test_wmts_tile_template_matches_what_the_capabilities_advertise(client, cog):
+    """前端靠 wmts_tile_template 拼瓦片，所以它必须和 capabilities 文档一致。
+
+    这里手写了一份模板，如果 TiTiler 改了路由形状或占位符，这项会立刻失败，
+    而不是等到 Cesium 在浏览器里默默拉不到图。
+    """
+    href = cog.as_posix()
+    advertised = client.get(
+        "/cog/WMTSCapabilities.xml", params={"url": href, "use_epsg": "true"}
+    ).text
+    templates = cog_templates("/cog", href, identifier="job42")
+
+    # capabilities 用绝对地址，前端那份是同源相对地址，比对时把 origin 摘掉。
+    tail = templates["wmts_tile_template"].lstrip("/")
+    normalized = advertised.replace("http://testserver/", "")
+    assert tail in normalized
+    assert "{TileMatrix}" in templates["wmts_tile_template"]
+    assert "{TileCol}" in templates["wmts_tile_template"]
+    assert "{TileRow}" in templates["wmts_tile_template"]
+
+
+def test_xyz_and_wmts_templates_address_the_same_tiles(cog):
+    templates = cog_templates("/cog", cog.as_posix(), identifier="job42")
+    assert templates["xyz"].replace("{z}", "{TileMatrix}") \
+        .replace("{x}", "{TileCol}") \
+        .replace("{y}", "{TileRow}") == templates["wmts_tile_template"]
+
+
 # --- 安全边界 ---
 
 

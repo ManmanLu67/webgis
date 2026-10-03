@@ -1,4 +1,5 @@
 import * as Cesium from "cesium"
+import { checkGeoreference } from "./georeference"
 import {
   clampOpacity,
   registerLayerType,
@@ -23,29 +24,75 @@ function assetId(url: string): number {
   return id
 }
 
-function imageryProvider(spec: LayerSpec): Promise<Cesium.ImageryProvider> | Cesium.ImageryProvider {
-  if (spec.crs === "GCJ-02") {
-    throw new Error("GCJ-02 不能直接叠到 WGS84 地球上")
+/** 挂载前先过一遍坐标与网格，失败要给出能照着改的中文原因。 */
+function assertMountable(spec: LayerSpec): void {
+  const verdict = checkGeoreference(spec)
+  if (!verdict.ok) {
+    throw new Error(verdict.reason ?? "该图层无法直接叠到地球上")
   }
-  if (spec.url.startsWith("ion://")) {
-    if (!token) throw new Error("使用 ion 影像前需要配置访问令牌")
-    return Cesium.IonImageryProvider.fromAssetId(assetId(spec.url))
-  }
-  const scheme =
-    spec.tilingScheme === "Geographic"
-      ? new Cesium.GeographicTilingScheme()
-      : new Cesium.WebMercatorTilingScheme()
+}
+
+function tilingSchemeOf(spec: LayerSpec): Cesium.TilingScheme {
+  return spec.tilingScheme === "Geographic"
+    ? new Cesium.GeographicTilingScheme()
+    : new Cesium.WebMercatorTilingScheme()
+}
+
+function xyzProvider(spec: LayerSpec): Cesium.ImageryProvider {
+  assertMountable(spec)
   return new Cesium.UrlTemplateImageryProvider({
     url: spec.url,
     credit: spec.attribution,
-    tilingScheme: scheme,
+    tilingScheme: tilingSchemeOf(spec),
     maximumLevel: spec.maxZoom,
   })
 }
 
-registerLayerType("xyz", (spec) => imageryController(spec))
-registerLayerType("cog", (spec) => imageryController(spec))
-registerLayerType("wmts", (spec) => imageryController(spec))
+/**
+ * 真 WMTS。OGC 定义了两种编码，Cesium 靠地址里有没有 `{}` 占位符自动判别：
+ * 有就走 RESTful（直接填模板），没有就走 KVP（把 SERVICE/VERSION/REQUEST 与
+ * 图层、格网补成查询参数，VERSION 固定 1.0.0）。两种都要支持，否则
+ * 天地图这类 KVP 服务要么接不上，要么得靠"拿 XYZ 模板冒充 WMTS"。
+ */
+function wmtsProvider(spec: LayerSpec): Cesium.ImageryProvider {
+  assertMountable(spec)
+  if (!spec.wmtsLayer) {
+    throw new Error("该 WMTS 图层缺少 Layer 标识，无法向服务方声明取哪一层")
+  }
+  const common = {
+    layer: spec.wmtsLayer,
+    style: spec.wmtsStyle ?? "default",
+    tileMatrixSetID: spec.wmtsTileMatrixSetId ?? "WebMercatorQuad",
+    format: spec.wmtsFormat ?? "image/png",
+    tilingScheme: tilingSchemeOf(spec),
+    credit: spec.attribution,
+    maximumLevel: spec.maxZoom,
+  }
+  if (spec.wmtsTileTemplate) {
+    return new Cesium.WebMapTileServiceImageryProvider({
+      url: spec.wmtsTileTemplate,
+      ...common,
+    })
+  }
+  return new Cesium.WebMapTileServiceImageryProvider({
+    url: spec.url,
+    ...common,
+    dimensions: spec.wmtsDimensions,
+  })
+}
+
+/** COG：交给服务端渲染成一张图，再作为单幅影像贴上去。 */
+function singleImageProvider(spec: LayerSpec): Cesium.ImageryProvider {
+  assertMountable(spec)
+  return new Cesium.SingleTileImageryProvider({
+    url: spec.url,
+    credit: spec.attribution,
+  })
+}
+
+registerLayerType("xyz", (spec) => imageryController(spec, (s) => xyzProvider(s)))
+registerLayerType("cog", (spec) => imageryController(spec, (s) => singleImageProvider(s)))
+registerLayerType("wmts", (spec) => imageryController(spec, (s) => wmtsProvider(s)))
 
 registerLayerType("terrain", (spec) => ({
   attribution: spec.attribution ?? "",
@@ -98,12 +145,15 @@ registerLayerType("3dtiles", (spec) => ({
   },
 }))
 
-function imageryController(spec: LayerSpec) {
+function imageryController(
+  spec: LayerSpec,
+  build: (spec: LayerSpec) => Cesium.ImageryProvider | Promise<Cesium.ImageryProvider>,
+) {
   return {
     attribution: spec.attribution ?? "",
     async attach(viewer: unknown): Promise<LayerHandle> {
       const globe = viewer as Cesium.Viewer
-      const provider = await imageryProvider(spec)
+      const provider = await resolveImageryProvider(spec, build)
       const layer = globe.imageryLayers.addImageryProvider(provider)
       layer.alpha = clampOpacity(spec.opacity ?? 1)
       layer.show = spec.show !== false
@@ -130,6 +180,21 @@ function imageryController(spec: LayerSpec) {
       }
     },
   }
+}
+
+/**
+ * ion 影像不走瓦片模板，所以各构建器之前先在这里统一处理一次，
+ * 免得每个 handler 都重复一遍 token 检查。
+ */
+async function resolveImageryProvider(
+  spec: LayerSpec,
+  build: (spec: LayerSpec) => Cesium.ImageryProvider | Promise<Cesium.ImageryProvider>,
+): Promise<Cesium.ImageryProvider> {
+  if (spec.url.startsWith("ion://")) {
+    if (!token) throw new Error("使用 ion 影像前需要配置访问令牌")
+    return Cesium.IonImageryProvider.fromAssetId(assetId(spec.url))
+  }
+  return build(spec)
 }
 
 async function terrainProvider(spec: LayerSpec): Promise<Cesium.TerrainProvider> {

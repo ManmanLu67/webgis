@@ -68,6 +68,8 @@ class TitilerPublisher:
             attribution="",
             wmts_capabilities=templates["wmts_capabilities"],
             wmts_layer=templates["wmts_layer"],
+            wmts_tile_template=templates["wmts_tile_template"],
+            wmts_tile_matrix_set_id=self.tile_matrix_set,
         )
 
     def unpublish(self, layer_id: str) -> None:
@@ -118,6 +120,10 @@ class GeoserverPublisher:
             crs="EPSG:3857",
             wmts_capabilities=f"{wmts}?REQUEST=GetCapabilities",
             wmts_layer=self._coverage_id(item),
+            # GWC 的 WMTS 是 KVP 编码：给基地址，图层与格网由客户端补成查询参数。
+            wmts_tile_template=None,
+            wmts_style="",
+            wmts_tile_matrix_set_id=self.tile_matrix_set,
             georeference_note="由 GeoServer 负责重投影到发布格网",
         )
 

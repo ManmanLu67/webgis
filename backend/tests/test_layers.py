@@ -23,6 +23,11 @@ FIELDS = {
     "license_note",
     "wmts_capabilities",
     "wmts_layer",
+    "wmts_tile_template",
+    "wmts_style",
+    "wmts_tile_matrix_set_id",
+    "wmts_format",
+    "wmts_dimensions",
     "georeference_note",
     "variants",
 }
