@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
 
 import pytest
+from app.catalog.sync import _config_json
 from app.plugins.loader import (
     AVAILABILITIES,
     MODES,
@@ -218,3 +220,63 @@ def test_sample_plugins_load_without_catalog_edits():
         path.read_text(encoding="utf-8") for path in (ROOT / "app" / "catalog").glob("*.py")
     )
     assert "sample_reference" not in catalog_text
+
+
+# --- needs_config 的源拿到凭据后应当变成 ready ---
+
+CREDENTIAL_STUB = (
+    "class Stub:\n"
+    "    id = 'stub'\n"
+    "    capabilities = set()\n"
+    "    availability = 'needs_config'\n"
+    "    def authenticate(self, config):\n"
+    "        key = (config.get('secrets') or {}).get('api_key')\n"
+    "        self.availability = 'ready' if key else 'needs_config'\n"
+    "    def search(self, bbox, datetime_range, filters):\n"
+    "        return []\n"
+    "    def get_layer_spec(self, item_id):\n"
+    "        raise NotImplementedError\n"
+    "    def ingest(self, item_id):\n"
+    "        raise NotImplementedError\n"
+)
+
+NEEDS_KEY = VALID.replace("availability: ready", "availability: needs_config").replace(
+    "credentials: []", "credentials: [api_key]"
+)
+
+
+def _write_credentialed(directory: Path, name: str) -> Path:
+    plugin = _write_plugin(directory, name, NEEDS_KEY.format(name=name))
+    (plugin / "provider.py").write_text(CREDENTIAL_STUB, encoding="utf-8")
+    return plugin
+
+
+def test_credentialed_plugin_without_a_key_is_needs_config(plugin_dir, build_app):
+    _write_credentialed(plugin_dir, "needskey")
+    client = TestClient(build_app(plugins_dir=plugin_dir))
+    row = next(r for r in client.get("/providers").json() if r["id"] == "needskey")
+    assert row["availability"] == "needs_config"
+    # 没 Key 的源不进弹层（宪章 C4：没 Key 不请求）
+    assert row["drape"] is False
+    assert row["picker"] is None
+
+
+def test_availability_reflects_the_provider_after_authentication(plugin_dir):
+    """manifest 声明的是基线，真正的可用性只有 provider 认证后才知道。
+
+    所以两者不一致时以 provider 为准——否则声明 needs_config 的源拿到 Key 后
+    永远不会出现在界面上。
+    """
+    _write_credentialed(plugin_dir, "needskey")
+
+    report = load_plugins(plugin_dir)
+    loaded = report.loaded[0]
+    assert loaded.manifest["availability"] == "needs_config", "manifest 基线应保持原样"
+    assert loaded.provider.availability == "needs_config", "没给 Key 时应是 needs_config"
+
+    loaded.provider.authenticate({"secrets": {"api_key": "demo"}})
+    assert loaded.provider.availability == "ready", "给了 Key 之后 provider 应改口"
+
+    recorded = json.loads(_config_json(loaded))
+    assert recorded["availability"] == "ready"
+    assert recorded["credentials"] == ["api_key"]

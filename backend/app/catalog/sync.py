@@ -74,11 +74,21 @@ def upsert_found(session: Session, provider_id: str, found) -> None:
 
 
 def _config_json(plugin) -> str:
-    """availability 以 manifest 为准。
+    """记进目录的可用性。
 
-    以前是 `getattr(provider, "availability", "ready")` —— 声明在类属性里，
-    隐式取值，加载器完全不校验。现在 manifest 必须显式写，坏了在加载时就报错。
+    `availability` 有两个来源，优先级是「provider 在 authenticate() 之后的取值
+    覆盖 manifest 声明」：
+
+    - manifest 是必填且已校验的基线，漏写会在加载时报错（原先这里是纯
+      `getattr(provider, "availability", "ready")` 的 duck-type，manifest 根本不参与）；
+    - 只有 provider 知道凭据在不在，所以允许它在认证后收紧：声明 needs_config 的源
+      拿到 Key 后应当变成 ready，否则界面上永远列不出来。
     """
+    availability = getattr(plugin.provider, "availability", None) or plugin.manifest[
+        "availability"
+    ]
+    if plugin.manifest["status"] == "skeleton":
+        availability = "skeleton"
     return json.dumps(
-        {"availability": plugin.manifest["availability"], "credentials": plugin.manifest["credentials"]}
+        {"availability": availability, "credentials": plugin.manifest["credentials"]}
     )
