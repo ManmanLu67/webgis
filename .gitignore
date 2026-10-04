@@ -12,6 +12,8 @@ dist/
 .env.local
 frontend/.env.local
 backend/.env.local
+.cursor/*
+!.cursor/skills/
 
 # spec-kit 的机器本地状态
 .specify/feature.json
