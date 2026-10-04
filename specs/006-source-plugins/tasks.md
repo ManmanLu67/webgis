@@ -28,9 +28,18 @@
 
 - [x] T010 运行插件测试。目录服务可用时，在浏览器确认未实现标记
 
+## 阶段 5：修复「只需选时间的源被要求填范围」
+
+- [x] T011 [US1] 在 `frontend/src/api/client.ts` 的 `searchProvider` 去掉空 bbox，不再把「没有范围」发成 `bbox: []`
+- [x] T012 [US1] 在 `frontend/src/ToolsPanel.vue` 用 `undefined` 而不是 `[]` 兜底
+- [x] T013 [US1] 在 `backend/app/api/routes.py` 把空数组与「没给范围」等同，与紧邻的 `tuple(bbox) if bbox else None` 对齐
+- [x] T014 [P] [US1] 在 `backend/tests/test_source_plugins.py` 覆盖 GIBS/Wayback 空范围可检索，且三数/五数仍被拒
+- [x] T015 [P] [US1] 在 `frontend/src/api/client.test.ts` 覆盖空 bbox 不上线、真实四元组照发
+
 ## 依赖
 
 T001 → T002 → T004。T005 与 T006 可并行。T007 依赖两者的检索行为。T008 依赖 T005 和 T006。
+T011 → T012。T013 与 T011 各自独立，但两侧都要改才不会复发。
 
 ## 实现策略
 
@@ -38,3 +47,4 @@ T001 → T002 → T004。T005 与 T006 可并行。T007 依赖两者的检索行
 
 - 2026-09-28：`tests/test_source_plugins.py` 与 `tests/test_plugins.py` 通过。样例检索不访问外网。默认公开目录地址未在本机对官方服务做实时检索。
 - 2026-09-28：选源收到「图层」弹层。弹层只留能铺上地球的可用源。已挂上的图层行仍做显隐、透明度和删除。接口仍返回可用、需配置、未实现。
+- 2026-10-04：`picker: time` 的源（GIBS、Wayback）在界面上被后端 400 挡住，实际不可用；根因是前端发 `bbox: []`、后端把空数组判成「长度不对」。两侧都改并加了回归测试，见 `docs/SPEC.md` §13 第 12 条。

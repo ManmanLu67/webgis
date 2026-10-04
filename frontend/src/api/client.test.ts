@@ -94,6 +94,63 @@ describe("错误处理", () => {
   })
 })
 
+describe("检索请求的范围参数", () => {
+  /** 把 POST 的 JSON 取出��，看 bbox 字段到底有没有上线。 */
+  function sentBody(call: FetchCall | undefined): Record<string, unknown> {
+    return JSON.parse(String((call?.[1] as RequestInit).body)) as Record<string, unknown>
+  }
+
+  it("空 bbox 不上线：picker 为 time 的源本来就不需要范围", async () => {
+    // 过去这里是 `bbox ?? []`，发出去的是 `bbox: []`，后端判成"长度不对"而 400。
+    const { calls } = stubFetch({ items: [] })
+    const { loadTimes } = await import("./client")
+    await loadTimes("gibs", [])
+    expect(sentBody(calls[0])).not.toHaveProperty("bbox")
+    expect(calls[0][0]).toBe("/api/providers/gibs/search")
+  })
+
+  it("不给 bbox 与给空 bbox 发出的请求完全一样", async () => {
+    const { calls } = stubFetch({ items: [] })
+    const { loadTimes } = await import("./client")
+    await loadTimes("gibs")
+    await loadTimes("gibs", [])
+    expect(sentBody(calls[0])).toEqual(sentBody(calls[1]))
+  })
+
+  it("真实的四元组照发不误，public_stac 仍拿得到范围", async () => {
+    const { calls } = stubFetch({ items: [] })
+    const { loadTimes } = await import("./client")
+    await loadTimes("public_stac", [116, 39, 117, 40])
+    expect(sentBody(calls[0]).bbox).toEqual([116, 39, 117, 40])
+  })
+})
+
+describe("标注删除", () => {
+  it("按契约发 DELETE，204 不带响应体", async () => {
+    // 契约 specs/005-map-tools/contracts/annotations.openapi.yaml：
+    // DELETE /annotations/{annotation_id} → 204
+    const { calls } = stubFetch("", 204)
+    const { deleteAnnotation } = await import("./client")
+    await expect(deleteAnnotation("abc123")).resolves.toBeUndefined()
+    expect(calls[0][0]).toBe("/api/annotations/abc123")
+    expect((calls[0][1] as RequestInit).method).toBe("DELETE")
+  })
+
+  it("标注 id 做 URL 编码", async () => {
+    const { calls } = stubFetch("", 204)
+    const { deleteAnnotation } = await import("./client")
+    await deleteAnnotation("a/../b")
+    expect(calls[0][0]).toBe("/api/annotations/a%2F..%2Fb")
+  })
+
+  it("后端拒绝时如实抛出，不把失败当成已删除", async () => {
+    // 目录未连接时标注只有本地 id，删不到就是删不到，界面要能说出这件事
+    stubFetch({ detail: "未知标注" }, 404)
+    const { deleteAnnotation } = await import("./client")
+    await expect(deleteAnnotation("local-only")).rejects.toThrow("未知标注")
+  })
+})
+
 describe("任务查询参数", () => {
   it("只带上确实给了的可选项", async () => {
     const { calls } = stubFetch([])

@@ -98,16 +98,21 @@ export async function searchProvider(
   providerId: string,
   body: { limit?: number; datetime?: string; bbox?: number[]; template?: unknown; key?: string },
 ): Promise<SearchResultItem[]> {
+  // 空 bbox 与"没给范围"同义，不发到线上。`picker: time` 的源（GIBS、Wayback）
+  // 不需要范围，而调用方过去用 `bbox ?? []` 兜底，实际发出去的是 `bbox: []`，
+  // 后端按"给了范围但长度不对"拒成 400，界面上一点就报"范围需要四个数"。
+  const payloadBody = { ...body }
+  if (payloadBody.bbox?.length === 0) delete payloadBody.bbox
   const payload = await request<{ items?: SearchResultItem[] }>(
     `/providers/${encodeURIComponent(providerId)}/search`,
-    json("POST", body),
+    json("POST", payloadBody),
   )
   return payload.items ?? []
 }
 
 export async function loadTimes(
   providerId: string,
-  bbox: number[],
+  bbox?: number[],
 ): Promise<{ id: string; title: string; time: string }[]> {
   const items = await searchProvider(providerId, { limit: 12, bbox })
   return items.map((item) => ({ id: item.id, title: item.title, time: item.time }))
@@ -140,6 +145,17 @@ export async function listAnnotations(): Promise<AnnotationFeature[]> {
 
 export async function saveAnnotation(geometry: unknown): Promise<AnnotationFeature> {
   return request<AnnotationFeature>("/annotations", json("POST", { geometry }))
+}
+
+/**
+ * 删掉一条标注。204 没有响应体，所以不返回值。
+ *
+ * 只有真正写进目录的标注才有 id 可删：目录未连接时前端会退回到 `crypto.randomUUID()`
+ * 生成的本地 id，那种 id 后端查不到，调用它会得到 404。调用方要能区分这两种情况，
+ * 所以错误照常往上抛，不在这里吞掉。
+ */
+export async function deleteAnnotation(annotationId: string): Promise<void> {
+  await request<never>(`/annotations/${encodeURIComponent(annotationId)}`, { method: "DELETE" })
 }
 
 // --- 入库任务 ---

@@ -225,8 +225,8 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 | ---- | ----------------------------------------------------------------------- |
 | 添加图层 | 点「图层」弹出能铺上地球的源。有时间维才选时间，默认该源的最近一景。地址含 `{z}` 就挂到三维地球。底图和地形来自地球配置，不出现在弹层里 |
 | 图层管理 | 已经挂上的行仍可显隐、排序、透明度、删除，并按数据源分组。合并掉的是选源，不是这些行                              |
-| 标注   | 点/线/面绘制，保存到 PostGIS，导出 GeoJSON                                          |
-| 量算   | 距离、面积、高度；结果可复制                                                          |
+| 标注   | 点/线/面绘制，保存到 PostGIS，导出 GeoJSON；可擦除最近一条、清除全部，写入目录的条目同时从目录删除 |
+| 量算   | 距离、面积、高度；结果可复制；可清除当前结果与草稿，且不影响标注 |
 | 飞行定位 | 坐标输入、图层范围定位、书签                                                          |
 
 ---
@@ -341,6 +341,8 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 | 9 | §2 与 §2.1：`GeoServer` 是"可选适配器"，用 `--profile geoserver` 打开；`--profile redis` / `minio` 同理 | compose 里**没有任何 `profiles:`**，也没有 `geoserver` 服务。而 `GeoserverPublisher.publish()` 的字节码里**零个方法调用** —— 它只按 `http://geoserver:8080/...` 拼字符串，从不建 datastore、不注册 coverage layer。设 `WEBGIS_DEFAULT_PUBLISHER=geoserver` 后入库会**报成功**，图层却指向一个永远解析不了的主机 | 验收标准标为不成立。修法待定：要么显式标为 skeleton 并在选择时拒绝，要么真正实现 REST 注册并补 compose profile。注意 `--profile X` 在没有匹配服务时**不报错**，只是照常起默认三容器 —— 静默做错事 |
 | 10 | 宪章 C4「不抓取违反条款的瓦片」；README「不内置任何第三方地图地址」 | `frontend/src/map/swipe.ts` 的 `DEMO_SCENES` 硬编码三个第三方瓦片 URL，其中 `services.arcgisonline.com`（Esri World Imagery）与 `basemaps.cartocdn.com`（CARTO）在任何 `plugin.yaml` 里都没有、也没有 `license_note`，只有前端自撰的署名行。且它们被标注为 `local` / `stac` / `wayback`，与实际内容（三个都是普通底图）不符 | 待处理。选项：换成真正走 provider 的图层、改成需显式配置才启用、或补 `license_note` 并把标签改成如实描述 |
 | 11 | §7 验收：同时支持本地入库 / 公开 STAC / Wayback 三种来源做卷帘 | `SwipeSource` 声明了三种，`DEMO_SCENES` 也给了三个场景，但没有任何一个真的接了本地入库的 COG 或 STAC 条目 —— 卷帘目前只能在三个硬编码底图之间对切 | 与第 10 条同源，一并处理 |
+| 12 | §9 验收：现场演示加入 `gibs` 或 `arcgis_wayback`，图层自动出现在前端 | 契约与后端都允许不填范围检索，但前端用 `bbox ?? []` 把「没有范围」变成 `bbox: []` 发出去，后端按「给了范围但长度不对」拒成 400「范围需要四个数」。`picker: time` 的源因此一点就报错，**永远走不到选时间那一步**，GIBS 与 Wayback 在界面上实际不可用 | 前后端各改一处：前端不再发空 bbox，后端把空数组与「没给范围」等同（消费逻辑 `tuple(bbox) if bbox else None` 本来就按 falsy 处理，是校验先把它挡了）。补两侧回归测试 |
+| 13 | §8 标注：点/线/面绘制，保存到 PostGIS，导出 GeoJSON | 保存与导出都通，但**没有任何删除入口** —— `annotations` 契约与 `DELETE /annotations/{id}` 后端端点早已存在且有测试，前端从未调用；地球上的实体也只增不减，标错了只能刷新页面 | 补 `deleteAnnotation` 客户端函数、擦除最近/清除全部与量算清除的地球侧句柄，并把「是否已写入目录」记进标注状态，据此决定要不要发删除请求（本地 id 发过去只会 404） |
 
 此外还有两处不是 Spec 问题而是实现自相矛盾，一并在此记录：
 

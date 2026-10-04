@@ -20,6 +20,7 @@ const props = defineProps<{
   scenes: SwipeScene[]
   tilesetConfigured: boolean
   sketching: boolean
+  annotationCount: number
   jobs: Job[]
 }>()
 
@@ -32,6 +33,9 @@ const emit = defineEmits<{
   // 运行时还有 isSketchKind 兜底，但那只是第二道防线，主要靠这一条。
   sketch: [kind: SketchKind]
   finish: []
+  eraseLastAnnotation: []
+  clearAnnotations: []
+  clearMeasure: []
   exportGeojson: []
   copy: []
   fly: [lon: number, lat: number]
@@ -192,14 +196,15 @@ async function chooseSource(source: CatalogSource): Promise<void> {
 
 async function loadTimes(): Promise<void> {
   if (!picked.value) return
-  const bbox = picked.value.picker === "extent" ? extentBbox() : null
+  // 没有范围就是 undefined，不要拿 [] 顶上：空数组会被当成"给了范围但长度不对"。
+  const bbox = picked.value.picker === "extent" ? (extentBbox() ?? undefined) : undefined
   if (picked.value.picker === "extent" && !bbox) {
     pickerError.value = "公开目录检索需要范围"
     return
   }
   pickerError.value = ""
   try {
-    const found = await fetchTimes(picked.value.id, bbox ?? [])
+    const found = await fetchTimes(picked.value.id, bbox)
     times.value = found
     selectedTime.value = found[0]?.time ?? ""
     if (!found.length) {
@@ -250,10 +255,31 @@ function submitCustom(): void {
   <aside class="dock">
     <header class="brand">
       <button type="button" class="home" aria-label="回到初始视角" title="回到初始视角" @click="emit('home')">
-        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6" />
-          <ellipse cx="12" cy="12" rx="4" ry="9" fill="none" stroke="currentColor" stroke-width="1.4" />
-          <path d="M3 12h18M4.5 8h15M4.5 16h15" fill="none" stroke="currentColor" stroke-width="1.2" />
+        <svg class="globe-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <!-- 球体的轮廓与纬线是静止的：绕竖直轴自转时它们本来就不动，
+               动的是经线，所以"球在转"这件事全靠下面两个椭圆。 -->
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5" />
+          <path
+            d="M4 8h16M4 12h16M4 16h16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.1"
+            stroke-linecap="round"
+          />
+          <!-- 经线在球面上的投影是个椭圆，横向半轴 = R·cos(经度)。
+               自转就是经度在变，rx 于是从 9 缩到 0 再回到 9；两个椭圆错开半个
+               周期，于是一个正好侧过去时另一个正好转正 facing，读起来就是转。 -->
+          <ellipse class="meridian" cx="12" cy="12" rx="9" ry="9" fill="none" stroke="currentColor" stroke-width="1.3" />
+          <ellipse
+            class="meridian meridian-lag"
+            cx="12"
+            cy="12"
+            rx="9"
+            ry="9"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.3"
+          />
         </svg>
       </button>
       <strong>遥感地球</strong>
@@ -420,6 +446,24 @@ function submitCustom(): void {
             <button type="button" class="primary" @click="emit('finish')">完成</button>
             <button type="button" @click="emit('exportGeojson')">导出</button>
           </div>
+          <div class="actions">
+            <button
+              type="button"
+              class="danger"
+              :disabled="annotationCount === 0"
+              @click="emit('eraseLastAnnotation')"
+            >
+              擦除最近
+            </button>
+            <button
+              type="button"
+              class="danger"
+              :disabled="annotationCount === 0"
+              @click="emit('clearAnnotations')"
+            >
+              清除全部（{{ annotationCount }}）
+            </button>
+          </div>
         </template>
 
         <template v-else-if="section.id === 'measure'">
@@ -431,6 +475,7 @@ function submitCustom(): void {
           <p v-if="sketching" class="hint">在地球上单击取点，然后按完成</p>
           <div class="actions">
             <button type="button" class="primary" @click="emit('finish')">完成</button>
+            <button type="button" class="danger" @click="emit('clearMeasure')">清除</button>
           </div>
           <p v-if="measureText" class="result">{{ measureText }}</p>
           <button type="button" class="primary" :disabled="!measureText" @click="emit('copy')">复制结果</button>
@@ -493,6 +538,27 @@ function submitCustom(): void {
   cursor: pointer;
 }
 .home:hover { background: rgba(61, 190, 165, 0.16); }
+/* 经线的横向半轴随自转收缩。rx 是 SVG 的几何属性，可以直接用 CSS 动画，
+   不用 SMIL —— 后者在部分浏览器里已不再推荐。 */
+@keyframes globe-spin {
+  0% { rx: 9px; }
+  50% { rx: 0px; }
+  100% { rx: 9px; }
+}
+.meridian {
+  animation: globe-spin 3.6s linear infinite;
+}
+/* 错开半个周期（3.6s 的一半），让两条经线始终一正一侧 */
+.meridian-lag {
+  animation-delay: -1.8s;
+}
+/* 尊重系统的"减少动态效果"设置：图标保持静止，不剥夺功能（它仍是个按钮） */
+@media (prefers-reduced-motion: reduce) {
+  .meridian {
+    animation: none;
+    rx: 6.5px;
+  }
+}
 .block + .block { border-top: 1px solid rgba(255, 255, 255, 0.06); }
 .section {
   width: 100%;
@@ -578,6 +644,12 @@ function submitCustom(): void {
 }
 .primary { background: #1f6f62; border-color: transparent; }
 .danger { color: #ffb4b4; }
+/* 擦除/清除在没有对应内容时必须明显不可用，否则点了才知道没反应 */
+.actions button:disabled,
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .muted, .hint { margin: 0; color: #8ea0ab; }
 .hint { margin-top: 8px; color: #f3ddaa; }
 .result { margin: 0; font-variant-numeric: tabular-nums; }

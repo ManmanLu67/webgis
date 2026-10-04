@@ -53,7 +53,11 @@ def search_provider(provider_id: str, body: dict, request: Request) -> dict:
     if availability == "needs_config" and not body.get("key"):
         raise HTTPException(status_code=409, detail="需配置")
     bbox = body.get("bbox")
-    if bbox is not None and len(bbox) != 4:
+    # 空数组与"没给范围"同义。`picker: time` 的源（GIBS、Wayback）本来就不需要
+    # bbox，而下面 `tuple(bbox) if bbox else None` 早就按 falsy 把它当成没有范围。
+    # 校验过去写死 `!= 4`，于是先一步把 `bbox: []` 挡成 400，与紧邻的消费逻辑
+    # 自相矛盾：界面上一点 GIBS 就报"范围需要四个数"，永远走不到选时间。
+    if bbox is not None and len(bbox) not in (0, 4):
         raise HTTPException(status_code=400, detail="范围需要四个数")
     try:
         found = plugin.provider.search(

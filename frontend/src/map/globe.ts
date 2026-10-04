@@ -17,6 +17,12 @@ export interface GlobeHandles {
   beginSketch(kind: SketchKind): void
   finishSketch(): SketchResult | null
   showAnnotation(id: string, geometry: GeoGeometry): void
+  /** 擦掉一条已完成的标注（地球上的实体）。 */
+  eraseAnnotation(id: string): void
+  /** 擦掉全部已完成的标注。 */
+  clearAnnotations(): void
+  /** 放弃当前正在画的草稿，不留下任何实体。 */
+  clearSketch(): void
   flyTo(lon: number, lat: number, height?: number): void
   flyToExtent(): void
   flyHome(): void
@@ -84,6 +90,15 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
     },
     showAnnotation(id, geometry) {
       sketch.show(id, geometry)
+    },
+    eraseAnnotation(id) {
+      sketch.erase(id)
+    },
+    clearAnnotations() {
+      sketch.eraseAll()
+    },
+    clearSketch() {
+      sketch.clearDraft()
     },
     flyTo(lon, lat, height = 1_500_000) {
       viewer.camera.flyTo({
@@ -163,6 +178,9 @@ function attachSketch(viewer: Cesium.Viewer) {
   const points: Cesium.Cartesian3[] = []
   let kind: SketchKind | null = null
   let draft: Cesium.Entity | null = null
+  // 已完成标注的实体 id。分开记是因为草稿不该被"清除标注"顺手带走，
+  // 而擦标注也不该动正在画的线——两者的生命周期不同。
+  const annotations = new Set<string>()
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
   handler.setInputAction((click: { position: Cesium.Cartesian2 }) => {
     if (!kind) return
@@ -229,6 +247,25 @@ function attachSketch(viewer: Cesium.Viewer) {
       const existing = viewer.entities.getById(id)
       if (existing) viewer.entities.remove(existing)
       viewer.entities.add(entityFromGeometry(id, geometry))
+      annotations.add(id)
+    },
+    erase(id: string) {
+      const existing = viewer.entities.getById(id)
+      if (existing) viewer.entities.remove(existing)
+      annotations.delete(id)
+    },
+    eraseAll() {
+      for (const id of annotations) {
+        const existing = viewer.entities.getById(id)
+        if (existing) viewer.entities.remove(existing)
+      }
+      annotations.clear()
+    },
+    clearDraft() {
+      kind = null
+      points.length = 0
+      if (draft) viewer.entities.remove(draft)
+      draft = null
     },
   }
 }

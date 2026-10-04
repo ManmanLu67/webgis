@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref, watch } from "vue"
 import { attributionOf, toMountableLayer, type WireLayerSpec } from "./api/layerSpec"
 import {
   cancelJob,
+  deleteAnnotation,
   layerSpec,
   listAnnotations,
   listJobs,
@@ -47,7 +48,7 @@ const bookmarks = ref<Bookmark[]>(readBookmarks())
 const flyLon = ref(116)
 const flyLat = ref(40)
 const bookmarkName = ref("北京")
-const annotations = ref<{ id?: string; geometry: GeoGeometry }[]>([])
+const annotations = ref<AnnotationRow[]>([])
 const sources = ref<CatalogSource[]>([])
 const xyzName = ref("")
 const xyzUrl = ref("")
@@ -60,6 +61,19 @@ const managedLayers = ref<ManagedLayer[]>([
   { id: "terrain", name: "地形", group: "地形", visible: true, opacity: 1, order: 1 },
 ])
 const extraLayers = new Map<string, LayerHandle>()
+
+/**
+ * `saved` 区分这条标注是不是真的写进了目录。
+ *
+ * 目录未连接时 `saveAnnotation` 会失败，此时标注只留在本次浏览，id 是本地
+ * `crypto.randomUUID()`。拿这个 id 去 `DELETE /annotations/{id}` 只会得到 404，
+ * 所以擦除时必须知道哪些能真的删。
+ */
+interface AnnotationRow {
+  id?: string
+  geometry: GeoGeometry
+  saved: boolean
+}
 let handles: GlobeHandles | null = null
 let swipeLeft: LayerHandle | null = null
 let swipeRight: LayerHandle | null = null
@@ -210,12 +224,66 @@ async function onFinish(): Promise<void> {
   handles?.showAnnotation(localId, result.geometry)
   try {
     const feature = await saveAnnotation(result.geometry)
-    annotations.value = [...annotations.value, { id: feature.id ?? localId, geometry: result.geometry }]
+    annotations.value = [...annotations.value, { id: feature.id ?? localId, geometry: result.geometry, saved: true }]
     toolMessage.value = "已写入目录"
   } catch {
-    annotations.value = [...annotations.value, { id: localId, geometry: result.geometry }]
+    annotations.value = [...annotations.value, { id: localId, geometry: result.geometry, saved: false }]
     toolMessage.value = "目录未连接，标注只留在本次浏览"
   }
+}
+
+/**
+ * 擦掉最近一条标注。地球上的实体总是能擦；只有真写进目录的才去发 DELETE。
+ * 后端删不掉时要说清楚库里还留着，否则刷新一下标注又回来了，会被当成没生效。
+ */
+async function onEraseLastAnnotation(): Promise<void> {
+  const last = annotations.value[annotations.value.length - 1]
+  if (!last?.id) {
+    toolMessage.value = "没有可擦除的标注"
+    return
+  }
+  handles?.eraseAnnotation(last.id)
+  annotations.value = annotations.value.slice(0, -1)
+  if (!last.saved) {
+    toolMessage.value = "已擦除最近一条标注"
+    return
+  }
+  try {
+    await deleteAnnotation(last.id)
+    toolMessage.value = "已擦除最近一条标注"
+  } catch {
+    toolMessage.value = "已从地球上擦除，但目录未连接，库里仍留着这一条"
+  }
+}
+
+/** 清除全部标注。地球与目录一起清，目录不可用时如实说明剩下什么。 */
+async function onClearAnnotations(): Promise<void> {
+  const removed = annotations.value
+  if (!removed.length) {
+    toolMessage.value = "没有可清除的标注"
+    return
+  }
+  handles?.clearAnnotations()
+  annotations.value = []
+  const persisted = removed.filter((row) => row.saved && row.id).map((row) => row.id as string)
+  if (!persisted.length) {
+    toolMessage.value = `已清除 ${removed.length} 条标注`
+    return
+  }
+  try {
+    await Promise.all(persisted.map((id) => deleteAnnotation(id)))
+    toolMessage.value = `已清除 ${removed.length} 条标注`
+  } catch {
+    toolMessage.value = `已从地球上清除 ${removed.length} 条，但目录未连接，库里仍留着`
+  }
+}
+
+/** 量算没有入库这回事，所以只清地球上的草稿与结果文字。 */
+function onClearMeasure(): void {
+  handles?.clearSketch()
+  measureText.value = ""
+  sketching.value = false
+  toolMessage.value = "已清除量算"
 }
 
 function onExport(): void {
@@ -385,11 +453,11 @@ async function loadSources(): Promise<void> {
 async function loadAnnotations(): Promise<void> {
   try {
     const features = await listAnnotations()
-    const loaded: { id?: string; geometry: GeoGeometry }[] = []
+    const loaded: AnnotationRow[] = []
     for (const feature of features) {
       const geometry = asGeoGeometry(feature.geometry)
       if (!geometry) continue
-      loaded.push({ id: feature.id, geometry })
+      loaded.push({ id: feature.id, geometry, saved: true })
       if (feature.id) handles?.showAnnotation(feature.id, geometry)
     }
     annotations.value = loaded
@@ -558,6 +626,7 @@ function startDrag(event: PointerEvent): void {
       :message="toolMessage"
       :sketching="sketching"
       :measure-text="measureText"
+      :annotation-count="annotations.length"
       :bookmarks="bookmarks"
       :sources="sources"
       :jobs="jobs"
@@ -579,6 +648,9 @@ function startDrag(event: PointerEvent): void {
       @remove="onLayerRemove"
       @sketch="onSketch"
       @finish="onFinish"
+      @erase-last-annotation="onEraseLastAnnotation"
+      @clear-annotations="onClearAnnotations"
+      @clear-measure="onClearMeasure"
       @export-geojson="onExport"
       @copy="onCopy"
       @home="handles?.flyHome()"

@@ -149,3 +149,28 @@ def test_installed_plugins_expose_status_without_naming_them_in_the_catalog(buil
     assert found.status_code == 200
     assert day in found.json()["items"][0]["layer"]["url"]
     assert found.json()["items"][0]["time"] == day
+
+
+def test_search_without_a_bbox_is_not_a_malformed_bbox(build_app):
+    """`picker: time` 的源不需要范围，前端过去发的是 `bbox: []`。
+
+    空数组过去被判成"给了范围但长度不对"而 400，于是 GIBS 与 Wayback 在界面上
+    一点就报"范围需要四个数"，永远走不到选时间那一步。空数组必须与"没给范围"
+    同义：GIBS 忽略 bbox（全球），Wayback 也按清单返回。
+    """
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
+    for provider_id in ("gibs", "arcgis_wayback"):
+        empty = client.post(f"/providers/{provider_id}/search", json={"limit": 1, "bbox": []})
+        assert empty.status_code == 200, (provider_id, empty.status_code, empty.text)
+        omitted = client.post(f"/providers/{provider_id}/search", json={"limit": 1})
+        assert omitted.status_code == 200, (provider_id, omitted.status_code, omitted.text)
+        assert len(empty.json()["items"]) == len(omitted.json()["items"]) == 1
+
+
+def test_a_present_bbox_still_has_to_have_four_numbers(build_app):
+    """放宽只针对"空"，不是放弃校验：三个数或五个数仍然要拒。"""
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
+    for bbox in ([0, 0, 1], [0, 0, 1, 1, 1]):
+        bad = client.post("/providers/public_stac/search", json={"limit": 1, "bbox": bbox})
+        assert bad.status_code == 400, (bbox, bad.status_code, bad.text)
+        assert "范围需要四个数" in bad.json()["detail"]
