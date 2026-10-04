@@ -8,6 +8,7 @@ import { parseLayerDate } from "./map/layerDate"
 import { groupLayers, type ManagedLayer } from "./map/layers"
 import type { SketchKind } from "./map/sketchKind"
 import { sceneOptionLabel, type SwipeScene } from "./map/swipe"
+import { timeChoiceLimit } from "./map/timeChoices"
 
 type TimeChoice = { id: string; title: string; time: string }
 
@@ -180,6 +181,10 @@ function extentBbox(): number[] | null {
   return [minx, miny, maxx, maxy]
 }
 
+/**
+ * 这个源该列出多少个时相。判断依据来自后端的 `time_choices`，
+ * 规则本身在 `timeChoices.ts` 里（有单测）。
+ */
 async function chooseSource(source: CatalogSource): Promise<void> {
   picked.value = source
   pickerError.value = ""
@@ -204,7 +209,7 @@ async function loadTimes(): Promise<void> {
   }
   pickerError.value = ""
   try {
-    const found = await fetchTimes(picked.value.id, bbox)
+    const found = await fetchTimes(picked.value.id, bbox, timeChoiceLimit(picked.value))
     times.value = found
     selectedTime.value = found[0]?.time ?? ""
     if (!found.length) {
@@ -255,31 +260,50 @@ function submitCustom(): void {
   <aside class="dock">
     <header class="brand">
       <button type="button" class="home" aria-label="回到初始视角" title="回到初始视角" @click="emit('home')">
+        <!-- 参考 🌏 的观感，但按本面板的配色重画：海洋压成偏青的深蓝、
+             陆块用低饱和的绿，与 12px 深色底和 #3dbea5 主色放在一起不刺眼。
+             经线在转 = 球在转：绕竖直轴自转时经度的投影半轴是 R·cos(经度)，
+             于是 rx 从 9 缩到 0 再回到 9；两条错开半个周期，一条侧过去时
+             另一条正好转正。纬线与轮廓不动，因为自转不影响它们。 -->
         <svg class="globe-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-          <!-- 球体的轮廓与纬线是静止的：绕竖直轴自转时它们本来就不动，
-               动的是经线，所以"球在转"这件事全靠下面两个椭圆。 -->
-          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5" />
-          <path
-            d="M4 8h16M4 12h16M4 16h16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.1"
-            stroke-linecap="round"
-          />
-          <!-- 经线在球面上的投影是个椭圆，横向半轴 = R·cos(经度)。
-               自转就是经度在变，rx 于是从 9 缩到 0 再回到 9；两个椭圆错开半个
-               周期，于是一个正好侧过去时另一个正好转正 facing，读起来就是转。 -->
-          <ellipse class="meridian" cx="12" cy="12" rx="9" ry="9" fill="none" stroke="currentColor" stroke-width="1.3" />
-          <ellipse
-            class="meridian meridian-lag"
-            cx="12"
-            cy="12"
-            rx="9"
-            ry="9"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.3"
-          />
+          <defs>
+            <clipPath id="globe-disc">
+              <circle cx="12" cy="12" r="9" />
+            </clipPath>
+          </defs>
+          <circle cx="12" cy="12" r="9" fill="#14496b" />
+          <g clip-path="url(#globe-disc)">
+            <!-- 两块简化陆块。只画轮廓不画细节：22px 下细节只会糊成一团。 -->
+            <path
+              d="M4.2 8.6c1.5-.5 2.6-.2 3.4.5.9.8 1.3 1.9 2.4 2.3 1 .4 1.6-.3 2.2-1.1.5-.7 1.2-.9 1.9-.5.6.4.7 1.2.3 2-1.1 2.2-2.6 3.9-4.6 5-1 .5-2.1.7-3.1.3-1.4-.6-1.6-2.2-1.5-3.7.1-1.9-.5-3.9-1-4.8z"
+              fill="#4f9c6d"
+            />
+            <path
+              d="M14.6 14.1c1.2-.6 2.4-.4 3.3.3.8.6 1.1 1.6 1.8 2.3.5.5 1.2.6 1.6.2.5-.5.2-1.3-.3-1.9-.9-1.1-1.7-2.3-2.2-3.6-.3-.8-.9-1.5-1.7-1.7-.9-.2-1.7.2-2.4.7-.7.5-1.2 1.2-1.3 2.1-.1.9.4 1.6 1.2 1.6z"
+              fill="#468f63"
+            />
+            <!-- 经线：自转的可见部分 -->
+            <ellipse class="meridian" cx="12" cy="12" rx="9" ry="9" fill="none" stroke="#dcecf5" stroke-width="1" />
+            <ellipse
+              class="meridian meridian-lag"
+              cx="12"
+              cy="12"
+              rx="9"
+              ry="9"
+              fill="none"
+              stroke="#dcecf5"
+              stroke-width="1"
+            />
+            <!-- 纬线：不随自转移动 -->
+            <path
+              d="M3.4 8.6h17.2M3.1 12h17.8M3.4 15.4h17.2"
+              fill="none"
+              stroke="#dcecf5"
+              stroke-width="0.7"
+              opacity="0.5"
+            />
+          </g>
+          <circle cx="12" cy="12" r="9" fill="none" stroke="#3dbea5" stroke-width="1.2" />
         </svg>
       </button>
       <strong>遥感地球</strong>
@@ -342,14 +366,15 @@ function submitCustom(): void {
             </template>
             <template v-else-if="pickerStep === 'time'">
               <p class="muted">{{ picked?.name }}</p>
+              <label class="field">自选日期
+                <input v-model="customDate" type="text" placeholder="年-月-日" />
+              </label>
+              <p class="hint">按上面的日期检索；留空则用最近一景。</p>
               <label v-for="(item, index) in times" :key="item.id" class="check">
                 <span>
                   <input v-model="selectedTime" type="radio" name="layer-time" :value="item.time" />
                   {{ index === 0 ? "最近 · " : "" }}{{ item.time }}
                 </span>
-              </label>
-              <label class="field">自选
-                <input v-model="customDate" type="text" placeholder="年-月-日" />
               </label>
               <div class="actions">
                 <button type="button" class="primary" @click="confirmTime">显示</button>

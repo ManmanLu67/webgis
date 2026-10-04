@@ -37,7 +37,7 @@ import pytest
 import yaml
 from app.api.routes import _layer_payload
 from app.ingest import worker
-from app.plugins.loader import AVAILABILITIES, PICKERS
+from app.plugins.loader import AVAILABILITIES, PICKERS, TIME_CHOICES
 from app.providers.protocol import LayerSpec
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -215,6 +215,12 @@ def test_provider_picker_enum_matches_the_loader():
     # PICKERS 含 None，契约里用 nullable 表达而不是把 null 塞进 enum
     assert set(schema["picker"]["enum"]) == {value for value in PICKERS if value}
     assert schema["picker"]["nullable"] is True
+
+
+def test_provider_time_choices_enum_matches_the_loader():
+    schema = load(CATALOG)["components"]["schemas"]["Provider"]["properties"]
+    assert set(schema["time_choices"]["enum"]) == TIME_CHOICES
+    assert schema["time_choices"]["nullable"] is True
 
 
 def test_job_status_enum_matches_the_worker_states():

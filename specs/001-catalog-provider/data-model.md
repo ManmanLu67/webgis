@@ -54,6 +54,29 @@
 
 `item_id` 与 `collection_id` 恰好设置一个。返回给客户端的文档是 `type`、`url`、`style`、`time_dimension`。`publisher_id` 会存储，但地图客户端选择加载器时不需要它。
 
+## 只出不落的图层字段
+
+下列字段不进 `layer` 表，由 `DataSourceProvider.get_layer_spec()` 在响应里给出，
+因此不入库也能表达（`specs/001-catalog-provider/contracts/catalog.openapi.yaml` 的 `Layer`）：
+
+| 字段 | 规则 |
+|---|---|
+| url_template | 字符串，可空。支持 `{z}` `{x}` `{y}` 与可选 `{time}` |
+| tiling_scheme | 枚举 `WebMercator`、`Geographic`，默认 `WebMercator` |
+| max_zoom | 整数，可空。给 Cesium 的 `maximumLevel`，避免它去请求不存在的级别 |
+| layer_kind | 枚举 `imagery`、`map`，默认 `imagery` |
+| crs | 字符串，默认 `EPSG:4326`。只用于署名与合规声明，不参与渲染 |
+| attribution | 字符串，默认空。展示署名 |
+| wmts_* | 真 WMTS 的两种编码，见契约 |
+| georeference_note | 字符串，默认空。需要说清的重投影或基准差异 |
+| coverage_bbox | 四元数组 `[西, 南, 东, 北]`（度），可空，默认 `null` |
+
+`coverage_bbox` 值得单独说明：有些源只覆盖瓦片网格的一部分，其余格子返回
+**不透明**的纯黑 no-data 图（GIBS 的 MODIS 真彩色只到 ±85°，而网格是整张 Web Mercator）。
+不声明的话 Cesium 会照常去请求那些格子，表现为地球上的一块块黑洞。
+声明后前端给 Cesium 传 `rectangle`，它根本不去要那些瓦片。
+`null` 表示整张网格都有数据，前端据此不裁剪。
+
 ## 关系
 
 数据源 1—N 集合 1—N 条目 1—N 图层。集合级图层没有条目。

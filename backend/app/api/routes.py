@@ -24,6 +24,7 @@ from app.ingest.worker import (
 )
 from app.ingest.worker import cancel as cancel_job_in_queue
 from app.models import Item, Job, Layer, Provider
+from app.plugins.loader import DEFAULT_TIME_CHOICES
 from app.providers.protocol import LayerSpec
 
 router = APIRouter()
@@ -385,6 +386,7 @@ def _layer_payload(spec, license_note: str = "") -> dict:
         "wmts_format": spec.wmts_format,
         "wmts_dimensions": spec.wmts_dimensions,
         "georeference_note": spec.georeference_note,
+        "coverage_bbox": spec.coverage_bbox,
         "variants": [],
     }
 
@@ -462,4 +464,8 @@ def _provider_document(row: Provider, plugin=None) -> dict:
         "availability": availability,
         "drape": drape,
         "picker": manifest.get("picker") if drape else None,
+        # 只列最近一条，还是列一个可选的时间列表。前端据此决定检索多少条，
+        # 所以由 manifest 决定而不是前端认插件 id —— 硬编码插件名正是
+        # docs/SPEC.md §13 记过的那类漂移。
+        "time_choices": manifest.get("time_choices", DEFAULT_TIME_CHOICES) if drape else None,
     }

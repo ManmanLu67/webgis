@@ -5,10 +5,12 @@ import pytest
 from app.catalog.sync import _config_json
 from app.plugins.loader import (
     AVAILABILITIES,
+    DEFAULT_TIME_CHOICES,
     MODES,
     PICKERS,
     REQUIRED_FIELDS,
     STATUSES,
+    TIME_CHOICES,
     load_plugins,
 )
 from fastapi.testclient import TestClient
@@ -183,7 +185,40 @@ def test_allowed_value_sets_are_what_the_contract_documents():
     assert STATUSES == {"implemented", "skeleton"}
     assert AVAILABILITIES == {"ready", "needs_config", "skeleton"}
     assert PICKERS == {None, "template", "extent", "time"}
+    assert TIME_CHOICES == {"latest", "list"}
     assert {"availability", "drape", "picker"} <= set(REQUIRED_FIELDS)
+
+
+def test_invalid_time_choices_are_rejected_with_the_allowed_options(plugin_dir):
+    """`time_choices` 只在选时间时才有意义，非法值要在这里就报出来。"""
+    body = (
+        VALID.format(name="x")
+        .replace("picker: template", "picker: time")
+        .replace("entrypoint: provider:Stub", "time_choices: whenever\nentrypoint: provider:Stub")
+    )
+    report = _load(plugin_dir, "x", body)
+    assert report.loaded == []
+    errors = [error for error in report.errors if "invalid time_choices" in error]
+    assert errors, report.errors
+    assert "可选" in errors[0]
+
+
+def test_time_choices_is_optional_and_defaults_to_latest(plugin_dir):
+    """不写也要能用：默认只给最近一条，与 docs/SPEC.md §8 的"最近一景"一致。"""
+    body = VALID.format(name="x").replace("picker: template", "picker: time")
+    report = _load(plugin_dir, "x", body)
+    assert [item.manifest["id"] for item in report.loaded] == ["x"]
+    manifest = report.loaded[0].manifest
+    assert manifest.get("time_choices", DEFAULT_TIME_CHOICES) == DEFAULT_TIME_CHOICES
+
+
+def test_time_choices_is_not_judged_when_no_time_is_asked_for(plugin_dir):
+    """不选时间的源写什么 time_choices 都无所谓，不要因此拒绝它。"""
+    body = VALID.format(name="x").replace(
+        "entrypoint: provider:Stub", "time_choices: whenever\nentrypoint: provider:Stub"
+    )
+    report = _load(plugin_dir, "x", body)
+    assert [item.manifest["id"] for item in report.loaded] == ["x"]
 
 
 # --- 仓库里自带的插件必须全部合规 ---

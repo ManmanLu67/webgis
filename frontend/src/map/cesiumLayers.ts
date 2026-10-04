@@ -38,6 +38,12 @@ function tilingSchemeOf(spec: LayerSpec): Cesium.TilingScheme {
     : new Cesium.WebMercatorTilingScheme()
 }
 
+function rectangleOf(spec: LayerSpec): Cesium.Rectangle | undefined {
+  if (!spec.coverage) return undefined
+  const { west, south, east, north } = spec.coverage
+  return Cesium.Rectangle.fromDegrees(west, south, east, north)
+}
+
 function xyzProvider(spec: LayerSpec): Cesium.ImageryProvider {
   assertMountable(spec)
   return new Cesium.UrlTemplateImageryProvider({
@@ -45,6 +51,9 @@ function xyzProvider(spec: LayerSpec): Cesium.ImageryProvider {
     credit: spec.attribution,
     tilingScheme: tilingSchemeOf(spec),
     maximumLevel: spec.maxZoom,
+    // 网格上没数据的格子不要去请求：那些瓦片是不透明的纯黑图，
+    // 拉回来只会把地球糊上一块块黑洞。
+    rectangle: rectangleOf(spec),
   })
 }
 

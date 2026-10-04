@@ -197,6 +197,14 @@ components:
           enum: [template, extent, time]
           nullable: true
           description: 界面上要向用户问什么。`drape` 为 false 时恒为 null
+        time_choices:
+          type: string
+          enum: [latest, list]
+          nullable: true
+          description: |
+            选时间时给几条。`latest` 只给最近一条（默认），`list` 给一个可选列表。
+            只有"时间本身就是用户要挑的东西"时才需要 `list` —— 目前只有历史版本源。
+            `drape` 为 false 时恒为 null。
         license_note: { type: string }
         cache_allowed: { type: boolean }
         error: { type: string, nullable: true }
@@ -282,6 +290,17 @@ components:
         georeference_note:
           type: string
           description: 需要在界面上说清的重投影或基准差异
+        coverage_bbox:
+          type: array
+          nullable: true
+          minItems: 4
+          maxItems: 4
+          items: { type: number }
+          description: |
+            瓦片网格上真正有数据的范围 `[西, 南, 东, 北]`（度）。
+            有些源只覆盖一部分网格，其余格子返回**不透明**的纯黑 no-data 图，
+            不裁剪就会在地球上留下黑洞。声明后前端据此给 Cesium 传 `rectangle`，
+            让它不去请求那些瓦片。`null` 表示整张网格都有数据。
         variants:
           type: array
           description: |

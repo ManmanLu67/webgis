@@ -10,5 +10,8 @@ status: implemented
 availability: ready
 drape: true
 picker: time
+# 这个源的"时间"其实是"历史版本"，挑版本正是它存在的意义，
+# 所以要给一个可选列表，而不是只给最近一条。
+time_choices: list
 catalog_url: https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json
 entrypoint: provider:WaybackProvider

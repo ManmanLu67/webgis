@@ -36,10 +36,22 @@
 - [x] T014 [P] [US1] 在 `backend/tests/test_source_plugins.py` 覆盖 GIBS/Wayback 空范围可检索，且三数/五数仍被拒
 - [x] T015 [P] [US1] 在 `frontend/src/api/client.test.ts` 覆盖空 bbox 不上线、真实四元组照发
 
+## 阶段 6：时间列表与覆盖范围
+
+- [x] T016 [US1] 在 `backend/app/plugins/loader.py` 增加 `time_choices`（`latest` / `list`，默认 `latest`），只在 `picker: time` 时校验
+- [x] T017 [US1] 在 `backend/plugins/arcgis_wayback/plugin.yaml` 声明 `time_choices: list`，其余源沿用默认
+- [x] T018 [US1] 在 `backend/app/api/routes.py` 的数据源文档里返回 `time_choices`，并加契约字段与 enum 守卫测试
+- [x] T019 [P] [US1] 在 `frontend/src/map/timeChoices.ts` 抽出列几条的规则并配单测；`ToolsPanel.vue` 按它取 `limit`，手填日期上移到列表之前
+- [x] T020 [US1] 在 `backend/app/providers/protocol.py` 与 `catalog.openapi.yaml` 增加 `coverage_bbox`，`gibs` 声明 ±85°
+- [x] T021 [US1] 在 `frontend/src/api/layerSpec.ts` 把四元组收成矩形（长度或方向不对就当没声明），`cesiumLayers.ts` 据此传 `rectangle`
+- [x] T022 [US2] 在 `frontend/src/map/globe.ts` 把 `globe.baseColor` 改成接近冰雪的浅色，修掉极点露出的默认深蓝
+- [x] T023 [P] [US1] 补测试：`coverage_bbox` 端到端、`time_choices` 默认与枚举、`toMountableLayer` 的矩形收窄、`loadTimes` 的 limit
+
 ## 依赖
 
 T001 → T002 → T004。T005 与 T006 可并行。T007 依赖两者的检索行为。T008 依赖 T005 和 T006。
 T011 → T012。T013 与 T011 各自独立，但两侧都要改才不会复发。
+T016 → T018。T019 依赖 T018 的字段。T020 与 T021 必须成对，否则裁剪不生效。T022 与 T021 一起才好看。
 
 ## 实现策略
 
@@ -48,3 +60,4 @@ T011 → T012。T013 与 T011 各自独立，但两侧都要改才不会复发�
 - 2026-09-28：`tests/test_source_plugins.py` 与 `tests/test_plugins.py` 通过。样例检索不访问外网。默认公开目录地址未在本机对官方服务做实时检索。
 - 2026-09-28：选源收到「图层」弹层。弹层只留能铺上地球的可用源。已挂上的图层行仍做显隐、透明度和删除。接口仍返回可用、需配置、未实现。
 - 2026-10-04：`picker: time` 的源（GIBS、Wayback）在界面上被后端 400 挡住，实际不可用；根因是前端发 `bbox: []`、后端把空数组判成「长度不对」。两侧都改并加了回归测试，见 `docs/SPEC.md` §13 第 12 条。
+- 2026-10-05：时间列表默认只列一条（历史版本源保留列表，手填日期上移为主要入口）；新增 `coverage_bbox` 修掉极地黑环，并调 `globe.baseColor` 修掉极点深蓝圆 —— 见 §13 第 14、15 条。Cesium 层的效果仍需浏览器目视，本仓库无 Cesium mock。

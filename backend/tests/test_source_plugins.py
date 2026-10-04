@@ -3,6 +3,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from app.providers.protocol import LayerSpec
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,3 +175,48 @@ def test_a_present_bbox_still_has_to_have_four_numbers(build_app):
         bad = client.post("/providers/public_stac/search", json={"limit": 1, "bbox": bbox})
         assert bad.status_code == 400, (bbox, bad.status_code, bad.text)
         assert "范围需要四个数" in bad.json()["detail"]
+
+
+def test_gibs_declares_the_area_where_it_actually_has_pixels(build_app):
+    """GIBS 只到 ±85°，网格却是整张 Web Mercator。
+
+    不声明覆盖范围的话，Cesium 会去请求 ±85° 以外的格子，而 GIBS 在那里返回
+    整块**不透明**纯黑图（实测 9/0/0 四点全 rgb(0,0,0)），表现为极地一圈黑环。
+    """
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
+    day = (datetime.now(UTC).date() - timedelta(days=6)).isoformat()
+    found = client.post("/providers/gibs/search", json={"datetime": day, "limit": 1})
+    layer = found.json()["items"][0]["layer"]
+    assert layer["coverage_bbox"] == [-180.0, -85.0, 180.0, 85.0]
+
+
+def test_coverage_bbox_defaults_to_none_which_means_the_whole_grid():
+    """默认 None = 整张网格都有数据，前端据此不去裁剪。
+
+    这里刻意不查网络：Wayback 之类的源会去拉真实清单，测试不该依赖外网。
+    """
+    spec = LayerSpec(
+        id="x",
+        type="xyz",
+        url="https://example.invalid/{z}/{x}/{y}.png",
+        style={},
+        time_dimension=None,
+        publisher_id="x",
+    )
+    assert spec.coverage_bbox is None
+
+
+def test_time_choices_separates_latest_only_sources_from_version_pickers(build_app):
+    """只有"时间本身就是用户要挑的东西"的源才给列表。
+
+    GIBS 与公开目录的"选时间"只是确认取哪一景，默认就是最近一景，给 12 条
+    反而让人以为要挑；历史版本的"时间"是"版本"，只剩一条就把这个源废了。
+    """
+    client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
+    listed = {row["id"]: row for row in client.get("/providers").json()}
+    assert listed["gibs"]["time_choices"] == "latest"
+    assert listed["public_stac"]["time_choices"] == "latest"
+    assert listed["arcgis_wayback"]["time_choices"] == "list"
+    # 进不了弹层的源不需要这个字段，给 null 让前端不必判断
+    assert listed["local_file"]["time_choices"] is None
+    assert listed["jilin1"]["time_choices"] is None

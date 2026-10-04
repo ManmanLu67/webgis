@@ -44,6 +44,10 @@ class GibsProvider:
                 layer_kind="imagery",
                 crs="EPSG:3857",
                 attribution=_ATTRIBUTION,
+                # MODIS 真彩色只到 ±85°。网格本身是整张 Web Mercator
+                # （到 ±85.0511°），再往极地 GIBS 返回整块纯黑的 no-data 图，
+                # 不裁剪的话极地会出现一圈黑环。实测 9/0/0 四点全为 rgb(0,0,0)。
+                coverage_bbox=[-180.0, -85.0, 180.0, 85.0],
             )
             items.append(
                 CatalogItem(
