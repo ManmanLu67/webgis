@@ -1,20 +1,3 @@
-<!--
-同步影响说明
-- 版本变化：1.1.0 → 1.2.0
-- 升级理由：C2 增加坐标系必须显式声明，以及署名、审图号写入 attribution。
-- 版本变化（前次）：1.0.0 → 1.1.0
-- 升级理由：技术约束改为与 docs/SPEC.md v0.3 一致。原则标题不变。C1、C2、C5、C7 的措辞已对齐，避免与新的默认栈矛盾。不是 2.0.0：没有删除原则，义务仍在。当时还没有按 1.0.0 写过功能计划。
-- 修改的原则：
-  - C1 契约优先：只依赖 DataSourceProvider → DataSourceProvider 与 TilePublisher
-  - C2 标准优先：一条路径上同时要求 WMTS/WMS/XYZ/OGC → 默认路径必须提供 XYZ 与 WMTS；WMS 与 GeoWebCache 只在 GeoServer profile
-  - C5 前后端解耦：增加 TilePublisherRegistry；地形和 3D Tiles 不走切片发布器
-  - C7 作品集友好：增加默认容器数量最少的要求
-- 新增章节：无
-- 删除章节：无
-- 暂缓项：无
-- 提交宪章文件前删除这段 HTML 注释。
--->
-
 # 遥感三维地球平台 Constitution
 
 ## Core Principles
@@ -57,7 +40,7 @@
 
 ### VII. 作品集友好（C7）
 
-演示数据 MUST 限于公开数据或自有数据。主线打磨优先于功能数量。`docker compose up` 的默认路径 MUST 只启动 postgis、api、web 三个容器。GeoServer、Redis、MinIO MUST 用 Compose profile 隔离，不得进入默认路径。非目标（云检测、变化检测、大模型问数、实时卫星接收、多租户权限、ArcGIS Pro Add-in、商业卫星真实对接）MUST NOT 进入主线实现；只允许保留扩展点。
+演示数据 MUST 限于公开数据或自有数据。主线打磨优先于功能数量。`docker compose up` 的默认路径 MUST 只启动 postgis、api、gateway 三个容器，其中 gateway 同时承担浏览器入口与前端静态宿主。GeoServer、Redis、MinIO MUST 用 Compose profile 隔离，不得进入默认路径。非目标（云检测、变化检测、大模型问数、实时卫星接收、多租户权限、ArcGIS Pro Add-in、商业卫星真实对接）MUST NOT 进入主线实现；只允许保留扩展点。
 
 理由：范围膨胀和服务数量会挤掉卷帘、插件和可启动演示。
 
@@ -75,12 +58,15 @@
 - 切片发布：核心只依赖 `TilePublisher`。默认实现 `titiler`（COG → XYZ/WMTS）。`geoserver`（含 GWC）MUST 是可选适配器，由 `--profile geoserver` 启用。
 - 对象存储：默认本地目录，经 fsspec 读写。MinIO 仅 `--profile minio`。换 S3 兼容存储 MUST 只改配置。
 - 任务：入库与转码 MUST 写入 `job` 表，由同镜像内的 worker 循环领取。分钟级 GDAL 任务 MUST NOT 使用 FastAPI `BackgroundTasks`。`BackgroundTasks` 只允许秒级轻活。Redis 与轻量队列（如 arq）仅 `--profile redis`。
-- 静态与反代：开发期 Vite 代理；生产期 FastAPI 挂静态资源。Caddy / Nginx 不是默认组件。
-- 部署：`docker compose up` MUST 只拉起 postgis + api + web。GDAL 与 rasterio MUST 只安装在 API 镜像内，不要求本机安装。
+- 静态与反代：开发期 Vite 代理；生产期经 Caddy 网关进入，网关同时发前端静态产物、反代目录 API（剥掉 `/api` 前缀）与切片服务（`/cog` 前缀原样透传）。Nginx 不是默认组件。
+- 部署：`docker compose up` MUST 只拉起 postgis + api + gateway。GDAL 与 rasterio MUST 只安装在 API 镜像内，不要求本机安装。
+- 表结构：MUST 只由 Alembic 迁移产生。启动时若库中版本落后于代码 head MUST 拒绝启动，不得用 `create_all` 之类的运行时建表兜底。
+- 切片端点安全：所有接受 COG 地址的端点 MUST 有路径校验，默认只放行数据目录下的本地 GeoTIFF；远程地址 MUST 由配置显式放行。
 - 工具链：Python 用 `uv` + `ruff`；前端用 `pnpm`；`pre-commit`；GitHub Actions 至少跑 lint 与契约/入库测试。
 - 测试范围：自动化 MUST 覆盖 Provider 契约、目录检索、入库到 COG 再到瓦片 URL、`TilePublisher` 适配器接口，以及 `LayerTypeRegistry` 纯函数。地球交互与卷帘手感以手动或录屏为准，不上端到端浏览器框架。
 - 插件清单：`plugin.yaml` 必填项缺失时，该插件加载 MUST 失败并给出明确错误，且 MUST NOT 阻止其他插件加载。
-- 插件优先级：`local_file`、`public_stac`、`arcgis_wayback` 为 P0。`public_stac` MUST 是通用公开 STAC 客户端，默认配置指向无需认证的公开 Sentinel-2 COG，具体端点以官方为准并写入 `license_note`。`gee` 与 `google_tiles` 为 P2 可选。`jilin1`、`beijing1` 仅骨架。`google_tiles` 仅官方 Map Tiles API，禁止抓取 Google Earth 瓦片。
+- 插件字段：`availability`、`drape`、`picker` MUST 显式声明并校验取值。前端图层弹层完全建立在这三项上，缺失会让界面静默少一个源而没有任何报错。声明可用的源 MUST NOT 在 `search()` 里抛 `NotImplementedError`。
+- 插件优先级：`local_file`、`public_stac`、`arcgis_wayback` 为 P0。`public_stac` MUST 是通用公开 STAC 客户端，默认配置指向无需认证的公开 Sentinel-2 COG，具体端点以官方为准并写入 `license_note`。`google_tiles` 仅官方 Map Tiles API，禁止抓取 Google Earth 瓦片。`gee`、`jilin1`、`beijing1`、`shiji`、`siwei` 均为仅骨架。
 
 ## Delivery Gates
 
@@ -104,4 +90,4 @@
 - 合规审查：计划与实现 MUST 能指出所遵守的原则编号（C1–C8）。无法对应原则的范围扩展默认拒绝。
 - 复杂度：引入新服务、新前端框架或新数据协议 MUST 在 plan 中说明为何现有栈不够用。默认路径增加第四个容器视为违反 C7，除非先修订本宪章。
 
-**Version**: 1.2.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-09-28
+**Version**: 1.3.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-04

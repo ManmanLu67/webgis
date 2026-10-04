@@ -2,6 +2,43 @@
 
 数据源可插拔的遥感 WebGIS。统一目录，在三维地球上加载影像、地形和 3D Tiles，并做时序对比。
 
+## 架构
+
+```
+                    浏览器  http://localhost:8080
+                              │
+                    ┌─────────▼─────────┐
+                    │  gateway (Caddy)  │  浏览器入口 + 前端静态宿主
+                    └─────────┬─────────┘
+              ┌───────────────┴───────────────┐
+     /api/*   │ 剥掉前缀                      │ /cog/*  原样透传
+    ┌─────────▼──────────┐          ┌─────────▼──────────┐
+    │  api (FastAPI)     │          │  COG 切片服务      │
+    │                    │◄─────────┤  （同进程，TiTiler）│
+    │  目录 API          │  同一份   │                    │
+    │  ProviderRegistry  │  本地文件 │  XYZ / WMTS / 预览 │
+    │  TilePublisherReg. │          │                    │
+    │  job worker        │          │                    │
+    └─────────┬──────────┘          └─────────┬──────────┘
+              │                               │
+        ┌─────▼─────┐                   ┌─────▼─────┐
+        │  PostGIS  │                   │ data_dir  │
+        └───────────┘                   │ COG 瓦片  │
+                                        └───────────┘
+
+  plugins/<id>/{plugin.yaml, provider.py}   ── 扫描加载 ──▶  ProviderRegistry
+```
+
+两个前缀并存是有意的：**切片服务不是目录 API 的一部分**。网关对 `/api` 剥前缀、
+对 `/cog` 原样透传，所以不能一刀切 `strip_prefix` —— 那样会把瓦片地址也剥掉。
+
+切片与目录 API 同进程，因此入库 worker 写出的 COG 与切片端点读的是同一份文件，
+不需要跨容器共享 volume，也不需要把本地路径改写成容器间可解析的地址。
+
+核心代码只依赖两个接口：`DataSourceProvider`（数据源）与 `TilePublisher`（切片
+发布）。新增数据源只加一个 `plugins/<id>/` 目录；换切片后端只加一个发布器类。
+两者都有守卫测试防止具体实现名漏进核心。
+
 ## 自定义 XYZ
 
 `custom_xyz` 是引用型插件。用户填写自己有权使用的瓦片 URL 模板即可接入，不必再写插件代码。模板需要包含级别和行列，例如 `{z}/{x}/{y}`，需要多时相时再加 `{time}`。
@@ -68,3 +105,48 @@ GeoTIFF；远程地址需要运维在 `WEBGIS_REMOTE_COG_HOSTS` 里显式列出�
 自己的日志读，不在这个端点里假设。
 
 GeoServer、Redis、MinIO 不在默认路径里。
+
+## 数据来源与署名
+
+平台不抓取违反服务条款的瓦片。每个来源的授权状态与展示要求如下 —— **展示时
+署名是硬要求，不是可选项**，各家的额度与条款以官网当前说明为准。
+
+### 公开、免认证（可演示）
+
+| 插件 | 来源 | 署名要求 |
+| --- | --- | --- |
+| `public_stac` | Element 84 Earth Search 上的 Sentinel-2 L2A COG | 按该数据集官方说明标注数据集名称与提供方 |
+| `gibs` | NASA GIBS / EOSDIS 全球每日影像 | 标注 NASA；平台只引用不另存瓦片 |
+| `arcgis_wayback` | Esri Wayback 历史影像版本 | 标注 Esri；只登记清单里已给出的瓦片地址 |
+| `local_file` | 自己上传的影像 | 无（自有数据） |
+| `custom_xyz` | 用户自备地址 | 无（授权由用户自己负责） |
+
+### 需自行申请 Key
+
+| 插件 | 需要 | 署名与审图号 |
+| --- | --- | --- |
+| `tianditu` | 天地图开发者平台 Key | 展示时**必须标注审图号**，署名以天地图当前要求为准。数据基准为 CGCS2000（`EPSG:4490`），瓦片网格是标准 Web Mercator，可直接叠加 |
+| `google_tiles` | Google Maps Platform API Key | 须按 Google 要求署名；只调用官方 Map Tiles API，不抓取 Google Earth 瓦片 |
+| `tencent_map` | 腾讯位置服务 Key | 电子地图而非遥感影像，且为 GCJ-02 坐标系，与 WGS84 有数百米人为偏移，**不铺到地球上** |
+
+> **已知缺口：凭据目前无处可填。** 插件加载时只会拿到 `plugin.yaml` 的内容，
+> 而代码里没有任何注入 `secrets` 的入口，所以这三个插件会一直停在
+> `needs_config`、不出现在界面上。这是刻意的保守默认（宪章 C4：没 Key 不请求），
+> 但也意味着「申请了 Key 就能用」这句话目前不成立。补一个
+> `WEBGIS_PROVIDER_SECRETS_<插件名>` 环境变量入口即可打通，属于待办。
+
+### 仅骨架（未接入，界面标注「未实现」）
+
+`jilin1`、`beijing1`、`shiji`、`siwei`、`gee` —— 没有授权或没有可公开引用的接口
+文档，因此只提供扩展点，不写猜测性接口。要用这些数据，走 `local_file` 自己上传。
+
+骨架插件的存在是为了展示扩展点，不代表已对接。仓库里有守卫测试确保任何声明为
+「可用」的插件都不会在 `search()` 里抛 `NotImplementedError` —— 避免界面上看起来
+能用、点进去才发现不行。
+
+### 默认底图
+
+不配置 `VITE_*` 环境变量时，底图用 OpenStreetMap 瓦片、地形用裸椭球
+（`ellipsoid://`）、3D Tiles 不加载。OSM 官方瓦片不适合大量请求；正式部署请按
+[OSM 瓦片使用政策](https://operations.osmfoundation.org/policies/tiles/) 配置自己的
+底图来源。

@@ -57,14 +57,14 @@
 | 切片发布     | `TilePublisher`：默认 `titiler`                                        | `geoserver` 适配器（含 GWC）                   | 从 COG 出 XYZ/WMTS；GeoServer 补 WMS 与企业级缓存  |
 | 对象存储     | 本地目录 + fsspec                                                       | MinIO（S3 兼容）                             | COG、地形、3D Tiles；换存储只改配置                  |
 | 任务       | `job` 表 + 同镜像 worker 循环                                             | Redis + 轻量队列（如 arq）                      | 入库/转码；禁止把分钟级 GDAL 任务丢给 `BackgroundTasks` |
-| 静态 / 反代  | 开发期 Vite 代理；生产期 FastAPI 挂静态                                         | Caddy 或 Nginx                            | 需要独立缓存或 TLS 时再加                          |
+| 静态 / 反代  | 开发期 Vite 代理；生产期 Caddy 网关（同时发静态资源、反代 `/api` 与 `/cog`）        | Nginx                            | 需要独立缓存或 TLS 时再加                          |
 | 部署       | Docker Compose                                                      | `profile: geoserver` / `redis` / `minio` | 默认三容器；GDAL/rasterio 只装在镜像内，不要求本机安装       |
 | 工具链      | `uv` + `ruff`；`pnpm`；`pre-commit`；最小 GitHub Actions（lint + 契约/入库测试） | —                                        | 个人开发者效率                                  |
 
 
 ```
 默认（docker compose up）:
-  postgis + api（FastAPI + TiTiler + job worker） + web（Vite / Vue3 / TS / Cesium）
+  postgis + api（FastAPI + TiTiler + job worker） + gateway（Caddy + 前端静态产物）
 
 可选:
   docker compose --profile geoserver up   # OGC WMS + GWC
@@ -94,7 +94,7 @@ FastAPI Core: Catalog API | Layer API | Job API | ProviderRegistry | TilePublish
 1. **切片默认 TiTiler，GeoServer 可选。** 主线可演示、可被 QGIS 加 XYZ/WMTS。作品集要讲"标准 GIS 服务"时再开 GeoServer profile，证明 `TilePublisher` 可替换。两条路径都做进核心，只把 GeoServer 设为默认，个人开发者会被 JVM 内存和 REST 配置拖死。
 2. **前端必须 TypeScript。** 图层、卷帘、OpenAPI 契约没有类型会失控。框架用 Vue 3，不并行维护 React。
 3. **入库任务不用 FastAPI** `BackgroundTasks`**。** COG 转换是分钟级、进程重启会丢。默认：`job` 表 + 同镜像内的 worker 循环（可用 `asyncio` 轮询）。任务量上来再上 Redis/arq。`BackgroundTasks` 只允许秒级轻活。
-4. **不引入 Caddy 作为默认第三种反代。** 开发期 Vite，生产期 API 挂静态即可。独立缓存层随 GeoServer 或以后的 CDN 再加。
+4. **Caddy 网关取代"API 挂静态"。** 原结论是生产期由 API 自己发静态资源、不引反代，理由是个人开发者会被反代配置拖死。这条在"必须一条命令跑通生产路径"这个约束下不成立：前端所有请求打 `/api/*` 而 `pnpm preview` 不读 Vite 的代理，容器里必然一片 404，而本机开发完全正常、很难发现。改为默认经 Caddy 网关进入，网关同时发静态产物、反代 `/api`（剥前缀）与 `/cog`（原样透传）。容器数仍守在三个 —— 前端产物 COPY 进网关镜像，不再单起 web 容器。独立缓存层与 TLS 仍随 GeoServer 或以后的 CDN 再加。
 5. **STAC 用** `pystac` **序列化，不上 pgSTAC。** 五张业务表 + `job` 够用。对外 Item 由库生成，禁止手拼 JSON。
 6. **测试只压主契约。** 自动化覆盖：Provider 契约、目录检索、入库→COG→瓦片 URL、TilePublisher 适配器接口。`LayerTypeRegistry` 做纯函数单测。地球交互、卷帘手感以手动/录屏为准，不上 E2E 框架。
 
@@ -280,7 +280,7 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 | `tianditu`       | 引用型    | 需 Key | 天地图开发者平台官方 WMTS。无 Key 不请求。展示须署名并标注审图号。坐标系记为 EPSG:4490。不抓取瓦片       |
 | `tencent_map`    | 引用型    | 需 Key | 腾讯位置服务官方 SDK / JS API。电子地图，不是遥感影像。坐标系 GCJ-02，不直接叠到 WGS84 地球，不抓取瓦片 |
 | `google_tiles`   | 引用型    | 需 Key | 仅 Google Maps Platform 的 Map Tiles API。不抓取 Google Earth 瓦片        |
-| `gee`            | 引用/导出型 | P2 可选 | 门槛高，不作为演示主路径。无账号时标「需配置」                                           |
+| `gee`            | 引用/导出型 | 仅骨架   | 未接入。Earth Engine 需 service account，且导出的是 GeoTIFF 而非瓦片地址，落地路径是走入库转 COG 再发布。不作为演示主路径               |
 | `jilin1`         | 入库型    | 仅骨架   | 无授权。不写真实 API                                                      |
 | `siwei`          | 引用型    | 仅骨架   | 四维地球。商业数据，无授权与公开接口文档                                              |
 | `shiji`          | 引用型    | 仅骨架   | 世纪空间。同上                                                           |
@@ -327,7 +327,7 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 | 周    | 产出                                                                |
 | ---- | ----------------------------------------------------------------- |
-| W1   | Constitution、001/002 spec、数据模型、Compose 默认三容器（postgis + api + web） |
+| W1   | Constitution、001/002 spec、数据模型、Compose 默认三容器（postgis + api + gateway） |
 | W2–3 | 本地入库 → COG → TiTiler XYZ/WMTS + `job` 可查询；可选再接通 GeoServer profile |
 | W4   | Cesium 主界面（Vue 3/TS）：全球地形/影像、3D Tiles、图层管理                        |
 | W5   | 时序卷帘、标注、量算、飞行定位                                                   |
@@ -353,8 +353,31 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 ## 12. 待确认事项
 
-1. `public_stac` 默认端点与集合 ID（Sentinel-2 公开 COG STAC），落地前按官方目录填写，并核对许可与署名。
-2. 各第三方服务（ion、Wayback、GEE、Google、TiTiler/GeoServer 版本与许可）的最新条款、免费额度与社区版许可，以官网为准。MinIO 社区版功能与许可近期有过调整，启用 profile 前再查。
-3. TiTiler 默认路径的 WMTS GetCapabilities 是否足以让 ArcGIS Pro 一键添加。若不足：Pro 演示改走 GeoServer profile，不降低默认路径对 QGIS 的验收。
-4. 宪章技术约束已在 `.specify/memory/constitution.md` v1.1.0 与本文件对齐。
+1. `public_stac` 默认端点与集合 ID（Sentinel-2 公开 COG STAC）。当前落在 `plugins/public_stac/plugin.yaml`（Element 84 Earth Search，`sentinel-2-l2a`），许可与署名以该数据集当时的官方说明为准。
+2. 各第三方服务（ion、Wayback、Google、TiTiler/GeoServer 版本与许可）的最新条款、免费额度与社区版许可，以官网为准。MinIO 社区版功能与许可近期有过调整，启用 profile 前再查。
+3. ~~TiTiler 默认路径的 WMTS GetCapabilities 是否足以让 ArcGIS Pro 一键添加。~~ **已确认可行**：`use_epsg=true` 让 `ows:SupportedCRS` 写成 `EPSG:3857` 而不是 `urn:ogc:def:crs:EPSG::3857`，这是 Pro 直接添加的关键。WMTS Layer 标识由 COG 文件名推导，入库路径下文件名即 item id，所以同一景反复取值标识不变、客户端重连时认得出还是同一层。Pro 演示不必改走 GeoServer profile。
+4. 宪章技术约束已在 `.specify/memory/constitution.md` v1.3.0 与本文件对齐。
+
+---
+
+## 13. Spec 与实现对账
+
+改造前六个 Spec 的 84 个任务已全部勾完，但其中若干「成功标准」在代码里并不成立 —— 勾的是文档产出，不是能力可用。逐条列出并说明处理方式，而不是把 spec 悄悄改掉。
+
+| # | Spec 原先声称 | 实际状况 | 处理 |
+|---|---|---|---|
+| 1 | 002：上传 GeoTIFF 自动生成可访问的 WMTS 或 XYZ 地址 | `publishers/registry.py` 只写死一个 URL 字符串，**没有任何进程会响应它** —— titiler 不是依赖也没挂载 | TiTiler 路由挂进 FastAPI 同一进程；补 XYZ / WMTS / preview 三套地址；路径校验与越界 404 |
+| 2 | 002：展示切片耗时 | `/tiles/timing` 是个空壳，测的是自己减自己的耗时 | 改为真实发起一次请求；未采样时如实报告而不是返回编造的 0 |
+| 3 | 002：两个 worker 不得领同一任务 | 单进程单线程轮询，碰巧成立 | 领取改成条件更新 `WHERE status='queued'` 看 rowcount；补真并发测试 |
+| 4 | C7：默认路径三个容器 = postgis/api/web | compose 里前端用 `pnpm preview`，不读 Vite 代理，`/api/*` 在容器里必然 404，而本机开发正常 | 网关取代 web 容器并同时发静态产物；容器数仍为三个；宪章 C7 相应修订 |
+| 5 | 001：切换 publisher 后核心不出现 `if publisher == ...` | 成立，但配置项名 `titiler_prefix` 把实现名带进了核心（被守卫测试抓出） | 配置改为实现中立的 `tile_service_prefix`；守卫测试扩到 `app/` 全部（除 `publishers` 包） |
+| 6 | 002：任务状态可查询，进程重启后未完成任务不得静默丢失 | 重启恢复是有的，但前端没有任何入口，只能手 curl | 补前端上传/轮询/任务列表/取消闭环；补 `GET /jobs` 与 `DELETE /jobs/{id}` |
+| 7 | 006：加入插件目录即零改动生效 | 成立。但 `drape`/`picker`/`availability` 三个前端依赖的字段既不必填也无取值校验，`availability` 还有两处真相源 | 三者进必填契约并校验；`availability` 明确 manifest 为基线、provider 认证后可收紧 |
+| 8 | 006：`gee` 为 P2 可选 | manifest 写 `implemented`，但 `search()` 恒抛 `NotImplementedError` —— 界面上看起来能用，点进去才发现不行 | 改为 `skeleton`；新增守卫测试：任何 `implemented` + `ready` 的插件，`search()` 抛 `NotImplementedError` 即测试失败 |
+
+此外还有两处不是 Spec 问题而是实现自相矛盾，一并在此记录：
+
+- **表结构有两套真相**：`main.py` 启动时 `create_all`（只补缺失的表，不改已有表），Alembic 又硬编码 sqlite 地址、与应用连的库不是同一个。漂移要到某条查询报 `no such column` 才暴露。已删 `create_all`，迁移成为唯一来源，启动时校验版本、落后即拒绝启动。
+- **`POST /providers/{id}/search` 与整个切片面没有契约**：契约里记了 6 个端点、6 个 Layer 字段，实现早已是 11 个端点、21 个字段。已补齐三份 OpenAPI 并新增切片面契约，另加守卫测试（`tests/test_contracts.py`）防止再次漂移。
+
 
