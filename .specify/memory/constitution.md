@@ -62,7 +62,7 @@
 - 部署：`docker compose up` MUST 只拉起 postgis + api + gateway。GDAL 与 rasterio MUST 只安装在 API 镜像内，不要求本机安装。
 - 表结构：MUST 只由 Alembic 迁移产生。启动时若库中版本落后于代码 head MUST 拒绝启动，不得用 `create_all` 之类的运行时建表兜底。
 - 切片端点安全：所有接受 COG 地址的端点 MUST 有路径校验，默认只放行数据目录下的本地 GeoTIFF；远程地址 MUST 由配置显式放行。
-- 工具链：Python 用 `uv` + `ruff`；前端用 `pnpm`；`pre-commit`；GitHub Actions 至少跑 lint 与契约/入库测试。
+- 工具链：Python 用 `ruff` 做 lint；前端用 `pnpm` + ESLint + `vue-tsc`，模板结构归 ESLint、类型归 `vue-tsc`。自动化目前靠本地命令执行，CI 尚未接入。
 - 测试范围：自动化 MUST 覆盖 Provider 契约、目录检索、入库到 COG 再到瓦片 URL、`TilePublisher` 适配器接口，以及 `LayerTypeRegistry` 纯函数。地球交互与卷帘手感以手动或录屏为准，不上端到端浏览器框架。
 - 插件清单：`plugin.yaml` 必填项缺失时，该插件加载 MUST 失败并给出明确错误，且 MUST NOT 阻止其他插件加载。
 - 插件字段：`availability`、`drape`、`picker` MUST 显式声明并校验取值。前端图层弹层完全建立在这三项上，缺失会让界面静默少一个源而没有任何报错。声明可用的源 MUST NOT 在 `search()` 里抛 `NotImplementedError`。
