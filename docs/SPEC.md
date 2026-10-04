@@ -1,10 +1,9 @@
 # 遥感三维地球平台：Spec 文档
 
 > 定位：技术亮点型全栈项目 ｜ 用途：作品集 ｜ 三维引擎：通用 CesiumJS（全球，无特定区域）
-> 变更（v0.2 → v0.3）：默认栈精简为 3 容器；切片服务抽象为 `TilePublisher`（默认 TiTiler，GeoServer 可选）；前端改为 Vite + Vue 3 + TypeScript；P0 增加无需认证的 `public_stac`；GEE 降为可选；重组件用 Compose profile 隔离。
-> 变更（v0.1 → v0.2）：移除 ROI 概念；ArcGIS 确定为"数据源"（B）；商业卫星仅做插件骨架。
-
----
+>
+> 本文件是总纲。实现现状与规格的逐条差异见 [§13 Spec 与实现对账](#13-spec-与实现对账)；
+> 启动方式、容器拓扑与数据来源署名见 [README](../README.md)。
 
 ## 0. 项目概述
 
@@ -16,16 +15,10 @@
 2. **切片服务可插拔**：核心只依赖 `TilePublisher`；默认 TiTiler 动态出瓦片，GeoServer 作为可选适配器证明标准发布可替换。
 3. **标准输出**：对外统一 XYZ / WMTS（默认路径必须可用）；WMS 与 GeoWebCache 随 GeoServer profile 提供。ArcGIS Pro、QGIS 可直接消费。
 4. **双接入模式**：入库型（转 COG 发布）与引用型（登记远程服务）。
-5. **指标可量化**：切片耗时、缓存命中率、首屏时间、FPS。
 
 **非目标**：云检测、变化检测、大模型问数（仅保留扩展点）；实时卫星接收；多租户权限；ArcGIS Pro Add-in；商业卫星 API 的真实对接；默认路径引入 Redis / MinIO / Nginx / GeoServer。
 
----
-
-
-
 ## 1. Constitution（宪章）
-
 
 | #   | 原则    | 具体约束                                                                   |
 | --- | ----- | ---------------------------------------------------------------------- |
@@ -38,15 +31,9 @@
 | C7  | 作品集友好 | 仅用公开或自有数据；主线打磨优先于功能数量；默认路径容器数保持最小                                      |
 | C8  | 性能预算  | 缓存命中瓦片 < 100ms；未命中 < 1s；地球端 ≥ 30fps（以实测为准，可调整）                         |
 
-
----
-
-
-
 ## 2. 技术栈与架构
 
 默认路径尽量少容器。重组件用 Compose profile 打开，不进 `docker compose up`。
-
 
 | 层级       | 默认选型                                                                | 可选（`--profile full` 或单项 profile）         | 职责                                       |
 | -------- | ------------------------------------------------------------------- | ---------------------------------------- | ---------------------------------------- |
@@ -59,8 +46,7 @@
 | 任务       | `job` 表 + 同镜像 worker 循环                                             | Redis + 轻量队列（如 arq）                      | 入库/转码；禁止把分钟级 GDAL 任务丢给 `BackgroundTasks` |
 | 静态 / 反代  | 开发期 Vite 代理；生产期 Caddy 网关（同时发静态资源、反代 `/api` 与 `/cog`）        | Nginx                            | 需要独立缓存或 TLS 时再加                          |
 | 部署       | Docker Compose                                                      | `profile: geoserver` / `redis` / `minio` | 默认三容器；GDAL/rasterio 只装在镜像内，不要求本机安装       |
-| 工具链      | `uv` + `ruff`；`pnpm`；`pre-commit`；最小 GitHub Actions（lint + 契约/入库测试） | —                                        | 个人开发者效率                                  |
-
+| 工具链      | `ruff`（后端 lint）；`pnpm` + ESLint + `vue-tsc`（前端）                     | —                                        | lint 与测试目前靠本地命令，CI 尚未接入       |
 
 ```
 默认（docker compose up）:
@@ -71,6 +57,8 @@
   docker compose --profile redis up       # 任务量大时
   docker compose --profile minio up       # 需要 S3 兼容存储时
 ```
+
+软件分层（容器拓扑与 URL 路由见 README）：
 
 ```
 Frontend: Cesium 地球 | 图层管理 | 卷帘 | 工具
@@ -87,25 +75,18 @@ FastAPI Core: Catalog API | Layer API | Job API | ProviderRegistry | TilePublish
 > 地形与 3D Tiles 不走切片服务。quantized-mesh 与 3D Tiles 由静态托管或第三方 URL 提供。
 > 前端框架锁定 Vue 3：Composition API 适合图层状态；不引入 React。CesiumJS 官方示例是 vanilla，封装边界放在 `MapAdapter` / `LayerTypeRegistry`。
 
-
-
 ### 2.1 已拍板的取舍
 
-1. **切片默认 TiTiler，GeoServer 可选。** 主线可演示、可被 QGIS 加 XYZ/WMTS。作品集要讲"标准 GIS 服务"时再开 GeoServer profile，证明 `TilePublisher` 可替换。两条路径都做进核心，只把 GeoServer 设为默认，个人开发者会被 JVM 内存和 REST 配置拖死。
+1. **切片默认 TiTiler，GeoServer 可选。** 主线可演示、可被 QGIS 加 XYZ/WMTS。作品集要讲"标准 GIS 服务"时再开 GeoServer profile，证明 `TilePublisher` 可替换。两条路径都做进核心，只把 GeoServer 设为默认。
 2. **前端必须 TypeScript。** 图层、卷帘、OpenAPI 契约没有类型会失控。框架用 Vue 3，不并行维护 React。
-3. **入库任务不用 FastAPI** `BackgroundTasks`**。** COG 转换是分钟级、进程重启会丢。默认：`job` 表 + 同镜像内的 worker 循环（可用 `asyncio` 轮询）。任务量上来再上 Redis/arq。`BackgroundTasks` 只允许秒级轻活。
-4. **Caddy 网关取代"API 挂静态"。** 原结论是生产期由 API 自己发静态资源、不引反代，理由是个人开发者会被反代配置拖死。这条在"必须一条命令跑通生产路径"这个约束下不成立：前端所有请求打 `/api/*` 而 `pnpm preview` 不读 Vite 的代理，容器里必然一片 404，而本机开发完全正常、很难发现。改为默认经 Caddy 网关进入，网关同时发静态产物、反代 `/api`（剥前缀）与 `/cog`（原样透传）。容器数仍守在三个 —— 前端产物 COPY 进网关镜像，不再单起 web 容器。独立缓存层与 TLS 仍随 GeoServer 或以后的 CDN 再加。
-5. **STAC 用** `pystac` **序列化，不上 pgSTAC。** 五张业务表 + `job` 够用。对外 Item 由库生成，禁止手拼 JSON。
+3. **入库任务不用 FastAPI `BackgroundTasks`。** COG 转换是分钟级、进程重启会丢。默认：`job` 表 + 同镜像内的 worker 循环。任务量上来再上 Redis/arq。`BackgroundTasks` 只允许秒级轻活。
+4. **Caddy 网关取代"API 挂静态"。** 原结论是生产期不引反代（个人开发者会被反代配置拖死），但前端所有请求打 `/api/*` 而 `pnpm preview` 不读 Vite 代理，容器里必然一片 404，本机开发却完全正常、很难发现。改为默认经 Caddy 网关进入，网关同时发静态产物、反代 `/api`（剥前缀）与 `/cog`（原样透传）。容器数仍守在三个 —— 前端产物 COPY 进网关镜像，不再单起 web 容器。独立缓存层与 TLS 仍随 GeoServer 或以后的 CDN 再加。
+5. **STAC 用 `pystac` 序列化，不上 pgSTAC。** 五张业务表 + `job` 够用。对外 Item 由库生成，禁止手拼 JSON。
 6. **测试只压主契约。** 自动化覆盖：Provider 契约、目录检索、入库→COG→瓦片 URL、TilePublisher 适配器接口。`LayerTypeRegistry` 做纯函数单测。地球交互、卷帘手感以手动/录屏为准，不上 E2E 框架。
-
----
-
-
 
 ## 3. 三维地球数据来源策略
 
 Cesium 视图按"图层类型 + URL"加载，来源与具体区域无关。ion、自建 URL 都是配置项，禁止把 ion 写死在视图核心。
-
 
 | 数据类型     | 默认来源（现成）                                                                       | 可选扩展                                                    |
 | -------- | ------------------------------------------------------------------------------ | ------------------------------------------------------- |
@@ -113,27 +94,17 @@ Cesium 视图按"图层类型 + URL"加载，来源与具体区域无关。ion�
 | 地形       | 可配置；默认 Cesium ion 的 Cesium World Terrain                                       | 用户自建 quantized-mesh，登记为 `terrain` 类型图层（URL 指向静态托管或本地目录） |
 | 3D Tiles | 可配置；默认 Cesium ion 资产                                                           | Google Photorealistic 3D Tiles（需 Key 与署名）；自有 3D Tiles   |
 
-
 **说明**
 
 - 地形作为一种图层类型，可在设置中切换 provider（ion / 自建 URL）。Cesium 同一时刻只用一个 terrain provider，切换即替换。
-- 自建地形属于加分项（P2），不阻塞主线。
 - 各服务的免费额度与条款以官网当前为准，落地前查官方文档。本文件不担保 ion / Wayback / STAC / Google 的额度仍然免费。
 
----
-
-
-
 ## 4. Spec 001：目录核心与 Provider 契约
-
-
 
 ### 4.1 用户故事
 
 - 作为数据管理员，我能登记数据源并检索影像，支持时间、空间、云量过滤。
 - 作为开发者，我只新增一个插件目录就能接入新数据源。
-
-
 
 ### 4.2 Provider 契约
 
@@ -155,8 +126,6 @@ class TilePublisher(Protocol):
     def unpublish(self, layer_id: str) -> None: ...
 ```
 
-
-
 ### 4.3 plugin.yaml 规范
 
 ```yaml
@@ -172,10 +141,7 @@ status: implemented        # implemented | skeleton
 entrypoint: provider.py:PublicStacProvider
 ```
 
-
-
 ### 4.4 数据模型（PostGIS，简版）
-
 
 | 表            | 关键字段                                                                             |
 | ------------ | -------------------------------------------------------------------------------- |
@@ -185,7 +151,6 @@ entrypoint: provider.py:PublicStacProvider
 | `layer`      | id, item_id / collection_id, type, url, style_json, time_dimension, publisher_id |
 | `annotation` | id, geometry, properties_json, created_at                                        |
 | `job`        | id, type, status, progress, error, payload_json, created_at, updated_at          |
-
 
 对外 `GET /items` 的 Item 用 `pystac` 序列化。内部表保持精简，不上 pgSTAC。
 
@@ -198,8 +163,6 @@ entrypoint: provider.py:PublicStacProvider
 - [ ] 切换 `TilePublisher` 实现（titiler / geoserver）后，`layer.url` 仍能被前端 `LayerTypeRegistry` 加载，核心不出现 `if publisher == ...`。
 
 ---
-
-
 
 ## 5. Spec 002：入库、发布与缓存
 
@@ -218,8 +181,6 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 ---
 
-
-
 ## 6. Spec 003：三维地球视图
 
 **用户故事**：我能在地球上叠加影像、地形、3D Tiles，独立开关并调节透明度。
@@ -234,8 +195,6 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 ---
 
-
-
 ## 7. Spec 004：时序卷帘
 
 **用户故事**：我能拖动分隔条，对比同一区域两个时间的影像。
@@ -248,12 +207,13 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 - [ ] 左右两侧时间可独立切换。
 - [ ] 同时支持"本地入库多时相"、"公开 STAC 多时相"与"Wayback 历史版本"三种来源。
 
+> 遗留：三种来源的时间语义并不等价 —— 本地入库按 `acquired_at` 取值、公开 STAC 按
+> `datetime` 区间检索、Wayback 只有离散的历史版本、没有连续时相。界面上三者的
+> "选时间"行为因此不完全一致，这个差异尚未在文档里说明。
+
 ---
 
-
-
 ## 8. Spec 005：图层管理与工具
-
 
 | 功能   | 验收标准                                                                    |
 | ---- | ----------------------------------------------------------------------- |
@@ -263,13 +223,9 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 | 量算   | 距离、面积、高度；结果可复制                                                          |
 | 飞行定位 | 坐标输入、图层范围定位、书签                                                          |
 
-
 ---
 
-
-
 ## 9. Spec 006：数据源插件
-
 
 | 插件               | 模式     | 状态    | 说明                                                                |
 | ---------------- | ------ | ----- | ----------------------------------------------------------------- |
@@ -287,8 +243,7 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 | `beijing1`       | 入库型    | 仅骨架   | 同上                                                                |
 | `custom_xyz`     | 引用型    | P0 实现 | 用户自备合法地址。不内置第三方 URL，不解析地图官网                                       |
 
-
-适合演示的公开来源是 Sentinel-2、Landsat、NASA GIBS、Cesium ion、ArcGIS Wayback 和 OpenStreetMap 底图。OpenStreetMap 官方瓦片不适合大量请求。以上额度与条款以各官网当前说明为准，本文不实时担保。
+适合演示的公开来源与逐项署名要求见 README 的「数据来源与署名」一节；额度与条款以各官网当前说明为准，本文不实时担保。
 
 **挂到地球**：选源发生在「图层」里，不再单独占一块数据源区。弹层只列出清单标明可铺、且状态为可用的源。GIBS 与 Wayback 直接给出 `{z}/{x}/{y}`。公开 STAC 必须带上地图范围，否则检索拒绝。本地文件的检索固定为空，地址等上传发布之后才有，因此不进弹层。未实现、需配置、以及不提供瓦片的源（如腾讯地图）也不进弹层。底图和地形来自地球配置，不在插件列表里。
 
@@ -320,10 +275,7 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 ---
 
-
-
 ## 10. 里程碑（约 7 周）
-
 
 | 周    | 产出                                                                |
 | ---- | ----------------------------------------------------------------- |
@@ -334,10 +286,7 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 | W6   | 插件机制落地：`public_stac`、`arcgis_wayback`                             |
 | W7   | 骨架插件、性能指标、文档；可选 GeoServer 适配器演示与自建地形                              |
 
-
 ---
-
-
 
 ## 11. 作品集交付清单
 
@@ -348,8 +297,6 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 - [ ] 一键启动：`docker compose up`（仅默认三容器即可演示目录、入库切片、地球）
 
 ---
-
-
 
 ## 12. 待确认事项
 
@@ -379,5 +326,4 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 - **表结构有两套真相**：`main.py` 启动时 `create_all`（只补缺失的表，不改已有表），Alembic 又硬编码 sqlite 地址、与应用连的库不是同一个。漂移要到某条查询报 `no such column` 才暴露。已删 `create_all`，迁移成为唯一来源，启动时校验版本、落后即拒绝启动。
 - **`POST /providers/{id}/search` 与整个切片面没有契约**：契约里记了 6 个端点、6 个 Layer 字段，实现早已是 11 个端点、21 个字段。已补齐三份 OpenAPI 并新增切片面契约，另加守卫测试（`tests/test_contracts.py`）防止再次漂移。
-
 
