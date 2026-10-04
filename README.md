@@ -129,11 +129,32 @@ GeoServer、Redis、MinIO 不在默认路径里。
 | `google_tiles` | Google Maps Platform API Key | 须按 Google 要求署名；只调用官方 Map Tiles API，不抓取 Google Earth 瓦片 |
 | `tencent_map` | 腾讯位置服务 Key | 电子地图而非遥感影像，且为 GCJ-02 坐标系，与 WGS84 有数百米人为偏移，**不铺到地球上** |
 
-> **已知缺口：凭据目前无处可填。** 插件加载时只会拿到 `plugin.yaml` 的内容，
-> 而代码里没有任何注入 `secrets` 的入口，所以这三个插件会一直停在
-> `needs_config`、不出现在界面上。这是刻意的保守默认（宪章 C4：没 Key 不请求），
-> 但也意味着「申请了 Key 就能用」这句话目前不成立。补一个
-> `WEBGIS_PROVIDER_SECRETS_<插件名>` 环境变量入口即可打通，属于待办。
+### 怎么填 Key
+
+变量名 = `WEBGIS_PROVIDER_SECRETS_` + 插件 id 转大写，值是一个 JSON 对象：
+
+```bash
+# backend/.env.local
+WEBGIS_PROVIDER_SECRETS_TIANDITU={"tk": "你的天地图 Key"}
+WEBGIS_PROVIDER_SECRETS_GOOGLE_TILES={"key": "你的 Google API Key"}
+WEBGIS_PROVIDER_SECRETS_TENCENT_MAP={"key": "你的腾讯位置服务 Key"}
+```
+
+`backend/plugins/*/plugin.yaml` 里只声明需要哪些凭据的**名字**（`credentials: [tk]`），
+值不进仓库 —— 这是它唯一该出现的位置。填错 JSON、漏填声明的键，都只会让**那一个源**
+停在 `needs_config`，其余源照常工作（宪章 C1）。
+
+> **⚠ 填了 Key 之后，Key 会出现在浏览器里 —— 这是躲不掉的。**
+>
+> 天地图是 KVP WMTS，规范要求每次瓦片请求都带 `tk`；Google 的浏览器瓦片 URL
+> 同样要带 `key`。也就是说，只要图层能被浏览器加载，Key 就必然随请求下发，
+> 浏览器开发者工具里看得到。靠"藏起来"是做不到的，只能靠服务方的来源限制兜底：
+> **在服务方后台把 Key 限制到你的域名 / 出网 IP**（Google Cloud Console 的
+> "API restrictions → Websites"，天地图的 Key 校验），并按服务方要求配好配额告警。
+>
+> 系统的默认是保守的：不配 Key 就不请求服务方（宪章 C4）；且带凭据的源一律
+> `cache_allowed: false`，所以 Key 不会被写进任何瓦片缓存。凭据值**不会**进
+> `provider` 表、不会进加载错误或日志（`tests/test_provider_secrets.py` 逐条守着）。
 
 ### 仅骨架（未接入，界面标注「未实现」）
 

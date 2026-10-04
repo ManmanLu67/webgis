@@ -12,8 +12,12 @@
 """
 
 import importlib.util
+import json
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -85,7 +89,7 @@ def load_plugins(plugins_dir: Path) -> LoadReport:
             continue
         try:
             provider = _load_entrypoint(path, str(manifest["entrypoint"]))
-            provider.authenticate(manifest)
+            provider.authenticate(inject_secrets(manifest))
         except Exception as exc:  # noqa: BLE001 — one bad package must not stop the others
             report.errors.append(f"{path.name}: {exc}")
             continue
@@ -101,6 +105,71 @@ def _read_manifest(path: Path, manifest_path: Path) -> str | None:
     except yaml.YAMLError as exc:
         return f"{path.name}: invalid plugin.yaml ({exc})"
     return None
+
+
+# 凭据从环境变量注入：WEBGIS_PROVIDER_SECRETS_<插件名大写>
+SECRETS_ENV_PREFIX = "WEBGIS_PROVIDER_SECRETS_"
+
+
+class SecretsError(ValueError):
+    """凭据环境变量存在但内容不可用。"""
+
+
+def secrets_env_name(plugin_id: str) -> str:
+    return f"{SECRETS_ENV_PREFIX}{plugin_id.upper()}"
+
+
+def read_secrets(plugin_id: str, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """读某个插件的凭据。
+
+    格式是 JSON 对象，例如 `WEBGIS_PROVIDER_SECRETS_TIANDITU='{"tk": "..."}'`。
+    名字对不上或内容不是对象时抛 `SecretsError`，**并且错误信息里不回显值**——
+    否则一条加载错误就能把密钥写进日志。
+
+    为什么走环境变量而不是配置文件：凭据不能进仓库。`plugin.yaml` 是提交进 git 的，
+    在那里填 `secrets` 等于把 Key 公开；所以 `plugin.yaml` 只声明 `credentials`
+    里需要哪些**名字**，值由部署环境提供。
+    """
+    env = os.environ if environ is None else environ
+    raw = env.get(secrets_env_name(plugin_id))
+    if raw is None or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SecretsError(
+            f"{secrets_env_name(plugin_id)} 不是合法 JSON（第 {exc.lineno} 行第 {exc.colno} 列）"
+        ) from None
+    if not isinstance(parsed, dict):
+        raise SecretsError(f"{secrets_env_name(plugin_id)} 应当是一个 JSON 对象")
+    bad = [key for key, value in parsed.items() if not isinstance(key, str) or not isinstance(value, str)]
+    if bad:
+        raise SecretsError(f"{secrets_env_name(plugin_id)} 的键与值都必须是字符串")
+    return cast(dict[str, str], parsed)
+
+
+def inject_secrets(manifest: dict, environ: Mapping[str, str] | None = None) -> dict:
+    """把凭据挂到 manifest 上，供 `provider.authenticate(manifest)` 读取。
+
+    返回新对象而不是就地改：manifest 是从 YAML 读出来的，就地改会让"这个插件
+    带了凭据"这件事混进后面写进目录的 `config_json` 里。只把需要哪些**名字**
+    记进目录，值不落库。
+    """
+    secrets = read_secrets(str(manifest["id"]), environ)
+    if not secrets:
+        return manifest
+    declared = set(manifest.get("credentials") or [])
+    provided = set(secrets)
+    if declared and provided != declared:
+        # 只提示不拒绝：多给一个键可能是有意的（插件可以接受可选参数），
+        # 少给才是问题。
+        missing = sorted(declared - provided)
+        if missing:
+            raise SecretsError(
+                f"{secrets_env_name(manifest['id'])} 缺少 plugin.yaml 声明的凭据："
+                + "、".join(missing)
+            )
+    return {**manifest, "secrets": secrets}
 
 
 def _validate(path: Path, manifest: dict) -> str | None:
