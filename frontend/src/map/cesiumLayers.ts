@@ -100,7 +100,9 @@ registerLayerType("terrain", (spec) => ({
     const globe = viewer as Cesium.Viewer
     const provider = await terrainProvider(spec)
     globe.terrainProvider = provider
-    let active: Cesium.TerrainProvider = provider
+    // Cesium 同一时刻只用一个 terrain provider，所以「隐藏」的实现是换回
+    // 裸椭球，而不是把 provider 置空 —— 原来保存一份引用就是为了切回来。
+    const active: Cesium.TerrainProvider = provider
     return {
       attribution: spec.attribution ?? "",
       setShow(show: boolean) {

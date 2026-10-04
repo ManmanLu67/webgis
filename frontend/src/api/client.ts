@@ -25,7 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
     response = await fetch(`/api${path}`, init)
-  } catch (cause) {
+  } catch {
+    // 拿不到 response 就没有状态码可言，统一按"连不上"处理。
+    // 底层原因（断网、CORS、网关 502）对这个界面来说没有区别。
     throw new ApiError(0, "目录未连接，请确认后端与网关都在运行")
   }
   const text = await response.text()

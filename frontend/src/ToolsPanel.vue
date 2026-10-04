@@ -105,14 +105,27 @@ const sections = [
 const pickerSources = computed(() => layerPickerSources(props.sources))
 
 function onFilePicked(event: Event): void {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0] ?? null
+  const file = (event.target as HTMLInputElement).files?.[0] ?? null
   uploadFile.value = file
   uploadHint.value = ""
   if (file && !/\.(tif|tiff)$/i.test(file.name)) {
     // 后端也会拒，但在这里先说清楚，省得白等一次上传
     uploadHint.value = "只接受 .tif 或 .tiff"
   }
+}
+
+/** 模板里的事件处理器只传值，不做类型断言。
+ *
+ * 原来是在模板里写 `($event.target as HTMLInputElement).checked`，两个问题：
+ * 模板表达式不该夹带类型断言（读起来费劲，而且 lint 规则认不出类型名，
+ * 会误报成"未定义属性"）；断言散在模板各处，改一次要动好几行。
+ */
+function checkedOf(event: Event): boolean {
+  return (event.target as HTMLInputElement).checked
+}
+
+function valueOf(event: Event): number {
+  return Number((event.target as HTMLInputElement).value)
 }
 
 function submitUpload(): void {
@@ -351,12 +364,12 @@ function submitCustom(): void {
             <div v-if="openGroup === bucket.group" class="nest">
               <div v-for="layer in bucket.layers" :key="layer.id" class="layer">
                 <button type="button" class="layer-name" @click="toggleLayer(layer.id)">
-                  <input type="checkbox" :checked="layer.visible" @click.stop @change="emit('visible', layer.id, ($event.target as HTMLInputElement).checked)" />
+                  <input type="checkbox" :checked="layer.visible" @click.stop @change="emit('visible', layer.id, checkedOf($event))" />
                   {{ layer.name }}
                 </button>
                 <div v-if="selectedLayer === layer.id" class="detail">
                   <label class="field">透明度
-                    <input type="range" min="0" max="1" step="0.05" :value="layer.opacity" @input="emit('opacity', layer.id, Number(($event.target as HTMLInputElement).value))" />
+                    <input type="range" min="0" max="1" step="0.05" :value="layer.opacity" @input="emit('opacity', layer.id, valueOf($event))" />
                   </label>
                   <div class="actions">
                     <button type="button" @click="emit('move', layer.id, 'up')">上移</button>
