@@ -156,11 +156,14 @@ entrypoint: provider.py:PublicStacProvider
 
 ### 4.5 验收标准
 
-- [ ] 新增 `plugins/xxx/` 后重启，`GET /providers` 出现该插件，核心零改动。
-- [ ] `GET /items?bbox=&datetime=&cloud_cover_lt=` 返回 STAC 风格 Item 列表（`pystac` 产出）。
-- [ ] 引用型与入库型 Item 输出同一 `layer` 结构。
-- [ ] `plugin.yaml` 缺必填项时加载失败并给出明确错误，不影响其他插件。
-- [ ] 切换 `TilePublisher` 实现（titiler / geoserver）后，`layer.url` 仍能被前端 `LayerTypeRegistry` 加载，核心不出现 `if publisher == ...`。
+> 勾选只依据代码与测试能核实的事实；不成立或无法自动核实的条目保持未勾，并写明原因。
+> 与 `specs/*/spec.md` 的「状态」不一致时，以本节为准。
+
+- [x] 新增 `plugins/xxx/` 后重启，`GET /providers` 出现该插件，核心零改动。
+- [x] `GET /items?bbox=&datetime=&cloud_cover_lt=` 返回 STAC 风格 Item 列表。三个参数都在路由签名里，序列化由 `app/catalog/stac.py` 的 `pystac.ItemCollection(...).to_dict()` 产出。
+- [x] 引用型与入库型 Item 输出同一 `layer` 结构：两者都返回 `LayerSpec`，都经 `GET /items/{item_id}/layer` 暴露。
+- [x] `plugin.yaml` 缺必填项时加载失败并给出明确错误，不影响其他插件。
+- [ ] 切换 `TilePublisher` 实现后 `layer.url` 仍能被 `LayerTypeRegistry` 加载。**部分不成立**：核心确实没有 `if publisher == ...`（有守卫测试），`titiler` 分支由 `tests/test_tile_service.py` 的真实请求守着；但 `geoserver` 分支的 `publish()` 只拼字符串、零网络调用，而 compose 里既无 `geoserver` 服务也无任何 profile，换过去会拿到指向不存在主机的图层。见 §13 第 9 条。
 
 ---
 
@@ -172,12 +175,13 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 **验收标准**
 
-- [ ] 上传一景 GeoTIFF，自动生成 Item 与可访问的 WMTS 或 XYZ 地址（默认 TiTiler 路径，不依赖 GeoServer 容器）。
-- [ ] 同一区域多时相数据可通过 `time` / `datetime` 参数区分。
-- [ ] 任务状态可查询（排队/运行/成功/失败）；API 进程重启后未完成的 `job` 仍能被 worker 继续或标记失败，不得 silently 丢失。
-- [ ] 展示切片耗时；有缓存层时展示命中率，无缓存层时明确标注。
-- [ ] 默认路径的服务可被 QGIS 直接添加；GeoServer profile 下可被 ArcGIS Pro 以 WMTS/WMS 添加。
-- [ ] 本机无需安装 GDAL：开发与演示均在 Compose 镜像内完成。
+> 勾选只依据代码与测试能核实的事实。以下第 5 条不成立。
+- [x] 上传一景 GeoTIFF，自动生成 Item 与可访问的 WMTS 或 XYZ 地址（默认 TiTiler 路径，不依赖 GeoServer 容器）。TiTiler 的 XYZ / WMTS / preview 由 `tests/test_tile_service.py` 以真实请求验证。
+- [x] 同一区域多时相可区分 —— 但靠的是**每景各自入库成独立图层**（`time_dimension` 落库），而不是给切片端点传 `datetime`：`tiles.openapi.yaml` 里没有 `datetime` 参数，`datetime` 是 `/items` 与 provider 检索的参数。
+- [x] 任务状态可查询（`GET /jobs`、`GET /jobs/{id}`、`DELETE /jobs/{id}`）；API 进程重启后未完成的 `job` 由 `recover_interrupted` 回收，不静默丢失。
+- [x] 展示切片耗时：`GET /tiles/timing` 真实发起一次请求；无缓存层时报 `cache: "none"`，有缓存层也只报 `"unverified"` 而不编造命中率。
+- [ ] 默认路径可被 QGIS 直接添加；GeoServer profile 下可被 ArcGIS Pro 以 WMTS/WMS 添加。**不成立**：`use_epsg=true` 让 `SupportedCRS` 写成 `EPSG:3857` 是 §12 第 3 条的推断，从未在 ArcGIS Pro 或 QGIS 里实测；且「GeoServer profile」目前根本不存在（compose 无该服务、无 `profiles:`），WMS 更无从谈起。
+- [x] 本机无需安装 GDAL：GDAL/rasterio 是可选依赖（`pyproject.toml` 的 `gdal` extra），Compose 镜像内自带。**注意**要在本机跑后端测试仍需 `pip install -e ".[dev,gdal,postgres]"`。
 
 ---
 
@@ -187,11 +191,12 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 **验收标准**
 
-- [ ] 默认加载全球地形与影像，启动即可浏览；底图与地形 URL 来自配置，更换 ion 以外的 provider 不改视图核心。
-- [ ] 三类数据独立开关，透明度可调。
-- [ ] 图层由 LayerTypeRegistry 创建，新增类型不改视图核心。
-- [ ] 3D Tiles 参数（如 `maximumScreenSpaceError`）可调，并记录 FPS。
-- [ ] 第三方数据（ion、Google 3D Tiles、Wayback、公开 STAC）显示署名。
+> 勾选只依据代码与测试能核实的事实。以下第 1 条不成立。
+- [ ] 默认加载全球地形与影像，启动即可浏览。**部分不成立**：默认底图是 OpenStreetMap（全球影像，成立），但默认地形是 `ellipsoid://` —— 一个裸椭球，**没有任何地形**。全球地形（Cesium World Terrain）只在设了 `VITE_ION_TOKEN` 时才生效，3D Tiles 默认不加载。底图与地形 URL 确实来自配置、不写死在视图核心，这部分成立。
+- [x] 三类数据独立开关，透明度可调（`App.vue` 的 `visible` 与 `onLayerOpacity`）。
+- [x] 图层由 LayerTypeRegistry 创建，新增类型不改视图核心。
+- [x] 3D Tiles 参数可调（`setMaximumScreenSpaceError` 接进 `App.vue` 的 watch），FPS 记录在 `#fps` 节点。**注意**默认不加载 3D Tiles，需自行配置 `VITE_TILESET_URL` 才能验证这条。
+- [x] 第三方数据（ion、公开 STAC、Wayback）显示署名：`attribution` 贯穿底图、地形、挂载图层与卷帘两侧。**但**卷帘的三个演示场景硬编码了两个第三方瓦片服务（Esri World Imagery、CARTO），它们只由前端自撰署名、无 `license_note`，与宪章 C4 及 README「不内置第三方地图地址」的自我要求不符。见 §13 第 10 条。
 
 ---
 
@@ -203,9 +208,10 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 **验收标准**
 
-- [ ] 拖动分隔条流畅无明显卡顿。
-- [ ] 左右两侧时间可独立切换。
-- [ ] 同时支持"本地入库多时相"、"公开 STAC 多时相"与"Wayback 历史版本"三种来源。
+> 勾选只依据代码与测试能核实的事实。三条都无法自动核实：一条不成立。
+- [ ] 拖动分隔条流畅无明显卡顿。**无法自动核实**：卷帘逻辑（`clampSplit` / `splitFromPointer`）有单测，但"流畅"是主观手感，宪章 C6 也规定这类以手动或录屏为准。
+- [ ] 左右两侧时间可独立切换。逻辑成立（`App.vue` 有独立的 `leftId` / `rightId` 与两条 watch），但没有自动化测试覆盖，故不勾。
+- [ ] 同时支持"本地入库多时相"、"公开 STAC 多时相"与"Wayback 历史版本"三种来源。**不成立**：`swipe.ts` 的 `SwipeSource` 声明了这三种，但 `DEMO_SCENES` 里对应的三个 URL 实际是 OpenStreetMap、Esri World Imagery、CARTO dark_all —— 都不是本地入库的 COG、不是 STAC 条目、也不是 Wayback 历史版本。标签与内容不符。见 §13 第 11 条。
 
 > 遗留：三种来源的时间语义并不等价 —— 本地入库按 `acquired_at` 取值、公开 STAC 按
 > `datetime` 区间检索、Wayback 只有离散的历史版本、没有连续时相。界面上三者的
@@ -269,9 +275,10 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 **验收标准**
 
-- [ ] 现场演示：加入 `public_stac` 或 `arcgis_wayback` 插件，图层自动出现在前端，核心代码零改动。
-- [ ] 骨架插件能被注册表识别并在界面标注"未实现"。
-- [ ] `public_stac` 无需用户注册即可检索并加载至少一景公开影像。
+> 勾选只依据代码与测试能核实的事实。第 2 条部分不成立。
+- [x] 现场演示：加入 `public_stac` 或 `arcgis_wayback` 插件，图层自动出现在前端，核心代码零改动。
+- [ ] 骨架插件能被注册表识别并在界面标注"未实现"。**部分不成立**：注册表识别成立（`GET /providers` 返回它们，`status: skeleton`，且有守卫测试禁止 `implemented` + `ready` 的插件在 `search()` 里抛 `NotImplementedError`）；但**界面上没有任何"未实现"标注** —— 选源弹层按 `drape === true && availability === "ready"` 过滤，骨架与需 Key 的源根本不进弹层，用户看不到也标不了。
+- [x] `public_stac` 无需用户注册即可检索并加载至少一景公开影像（默认端点 Element 84 Earth Search 的 `sentinel-2-l2a`）。
 
 ---
 
@@ -290,11 +297,12 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 ## 11. 作品集交付清单
 
-- [ ] README：一句话定位、架构图、亮点 GIF（卷帘、插件热加载）；写明默认三容器与可选 profile
-- [ ] `/specs` 精选（constitution + 001 + 006）；每份 feature spec 控制在可扫读长度，细节进 plan/contracts，不在本总纲膨胀
-- [ ] 性能指标表：切片耗时、缓存命中率（或明确无缓存）、首屏时间、FPS
-- [ ] 数据来源与署名说明页
-- [ ] 一键启动：`docker compose up`（仅默认三容器即可演示目录、入库切片、地球）
+> 勾选只依据仓库里实际存在的东西。
+- [ ] README：一句话定位、架构图、亮点 GIF（卷帘、插件热加载）；写明默认三容器与可选 profile。**部分完成**：定位、架构图、默认三容器都有；**亮点 GIF 没有**（仓库内零图片文件）；**可选 profile 没写**（`geoserver` / `redis` / `minio` 三个 profile 在 compose 里都不存在，见 §13 第 9 条）。
+- [x] `/specs` 精选（constitution + 001 + 006）；每份 feature spec 控制在可扫读长度，细节进 plan/contracts，不在本总纲膨胀。
+- [ ] 性能指标表：切片耗时、缓存命中率（或明确无缓存）、首屏时间、FPS。**未做**（已明确延后）。`/tiles/timing` 是真实采样的，但还没有汇总成表。
+- [x] 数据来源与署名说明页（README「数据来源与署名」）。
+- [ ] 一键启动：`docker compose up`（仅默认三容器即可演示目录、入库切片、地球）。**未实测**：配置齐全，但本机没有 Docker，`docker compose up` 与 `scripts/smoke.py` 从未实际跑过。这是整条生产路径唯一的证据空白。
 
 ---
 
@@ -311,6 +319,10 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 
 改造前六个 Spec 的 84 个任务已全部勾完，但其中若干「成功标准」在代码里并不成立 —— 勾的是文档产出，不是能力可用。逐条列出并说明处理方式，而不是把 spec 悄悄改掉。
 
+各节验收标准（§4.5、§5、§6、§7、§9）与交付清单（§11）现已逐条重判：能核实的勾上，不成立或无法自动核实的保持未勾并写明原因。**若本节与那些复选框冲突，以本节为准。**
+
+下面是改造过程中发现、且已处理的漂移：
+
 | # | Spec 原先声称 | 实际状况 | 处理 |
 |---|---|---|---|
 | 1 | 002：上传 GeoTIFF 自动生成可访问的 WMTS 或 XYZ 地址 | `publishers/registry.py` 只写死一个 URL 字符串，**没有任何进程会响应它** —— titiler 不是依赖也没挂载 | TiTiler 路由挂进 FastAPI 同一进程；补 XYZ / WMTS / preview 三套地址；路径校验与越界 404 |
@@ -321,6 +333,14 @@ GeoServer profile 开启时，同一 `publish` 走 GeoServer REST（含 TIME 维
 | 6 | 002：任务状态可查询，进程重启后未完成任务不得静默丢失 | 重启恢复是有的，但前端没有任何入口，只能手 curl | 补前端上传/轮询/任务列表/取消闭环；补 `GET /jobs` 与 `DELETE /jobs/{id}` |
 | 7 | 006：加入插件目录即零改动生效 | 成立。但 `drape`/`picker`/`availability` 三个前端依赖的字段既不必填也无取值校验，`availability` 还有两处真相源 | 三者进必填契约并校验；`availability` 明确 manifest 为基线、provider 认证后可收紧 |
 | 8 | 006：`gee` 为 P2 可选 | manifest 写 `implemented`，但 `search()` 恒抛 `NotImplementedError` —— 界面上看起来能用，点进去才发现不行 | 改为 `skeleton`；新增守卫测试：任何 `implemented` + `ready` 的插件，`search()` 抛 `NotImplementedError` 即测试失败 |
+
+本轮核对验收标准时又查出三条，逐条列出：
+
+| # | 文档原来说 | 实际状况 | 处理 |
+|---|---|---|---|
+| 9 | §2 与 §2.1：`GeoServer` 是"可选适配器"，用 `--profile geoserver` 打开；`--profile redis` / `minio` 同理 | compose 里**没有任何 `profiles:`**，也没有 `geoserver` 服务。而 `GeoserverPublisher.publish()` 的字节码里**零个方法调用** —— 它只按 `http://geoserver:8080/...` 拼字符串，从不建 datastore、不注册 coverage layer。设 `WEBGIS_DEFAULT_PUBLISHER=geoserver` 后入库会**报成功**，图层却指向一个永远解析不了的主机 | 验收标准标为不成立。修法待定：要么显式标为 skeleton 并在选择时拒绝，要么真正实现 REST 注册并补 compose profile。注意 `--profile X` 在没有匹配服务时**不报错**，只是照常起默认三容器 —— 静默做错事 |
+| 10 | 宪章 C4「不抓取违反条款的瓦片」；README「不内置任何第三方地图地址」 | `frontend/src/map/swipe.ts` 的 `DEMO_SCENES` 硬编码三个第三方瓦片 URL，其中 `services.arcgisonline.com`（Esri World Imagery）与 `basemaps.cartocdn.com`（CARTO）在任何 `plugin.yaml` 里都没有、也没有 `license_note`，只有前端自撰的署名行。且它们被标注为 `local` / `stac` / `wayback`，与实际内容（三个都是普通底图）不符 | 待处理。选项：换成真正走 provider 的图层、改成需显式配置才启用、或补 `license_note` 并把标签改成如实描述 |
+| 11 | §7 验收：同时支持本地入库 / 公开 STAC / Wayback 三种来源做卷帘 | `SwipeSource` 声明了三种，`DEMO_SCENES` 也给了三个场景，但没有任何一个真的接了本地入库的 COG 或 STAC 条目 —— 卷帘目前只能在三个硬编码底图之间对切 | 与第 10 条同源，一并处理 |
 
 此外还有两处不是 Spec 问题而是实现自相矛盾，一并在此记录：
 
