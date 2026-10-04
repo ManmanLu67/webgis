@@ -6,6 +6,7 @@ import type { Bookmark } from "./map/bookmarks"
 import { layerPickerSources } from "./map/drapeSources"
 import { parseLayerDate } from "./map/layerDate"
 import { groupLayers, type ManagedLayer } from "./map/layers"
+import type { SketchKind } from "./map/sketchKind"
 import { sceneOptionLabel, type SwipeScene } from "./map/swipe"
 
 type TimeChoice = { id: string; title: string; time: string }
@@ -27,7 +28,9 @@ const emit = defineEmits<{
   opacity: [id: string, value: number]
   move: [id: string, direction: "up" | "down"]
   remove: [id: string]
-  sketch: [kind: string]
+  // 用联合类型而不是 string：按钮里写 emit('sketch', 'poitn') 会被当场拦下。
+  // 运行时还有 isSketchKind 兜底，但那只是第二道防线，主要靠这一条。
+  sketch: [kind: SketchKind]
   finish: []
   exportGeojson: []
   copy: []

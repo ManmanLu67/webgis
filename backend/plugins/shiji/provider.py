@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from app.providers.protocol import CatalogItem, LayerSpec
 
 _MESSAGE = "世纪空间没有授权与接口文档，不抓取瓦片，也不编写猜测性接口。"
@@ -5,7 +7,7 @@ _MESSAGE = "世纪空间没有授权与接口文档，不抓取瓦片，也不�
 
 class ShijiProvider:
     id = "shiji"
-    capabilities = {"search"}
+    capabilities: ClassVar[set[str]] = {"search"}
     availability = "skeleton"
 
     def authenticate(self, config: dict) -> None:

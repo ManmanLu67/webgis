@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from app.providers.protocol import CatalogItem, LayerSpec
 
 _MESSAGE = "无授权与接口文档，不提供真实查询或入库。可把影像交给本地文件插件。"
@@ -5,7 +7,7 @@ _MESSAGE = "无授权与接口文档，不提供真实查询或入库。可把�
 
 class Jilin1Provider:
     id = "jilin1"
-    capabilities = {"search", "ingest"}
+    capabilities: ClassVar[set[str]] = {"search", "ingest"}
     availability = "skeleton"
 
     def authenticate(self, config: dict) -> None:

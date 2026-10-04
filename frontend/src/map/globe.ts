@@ -3,6 +3,9 @@ import type { ResolvedGlobe } from "../config"
 import "./cesiumLayers"
 import { createLayer, type LayerHandle, type LayerSpec, type SplitSide } from "./layerTypeRegistry"
 import { formatMeasure, heightMeters, pathDistance, ringArea, type LonLat } from "./measure"
+import type { SketchKind } from "./sketchKind"
+
+export type { SketchKind } from "./sketchKind"
 
 export interface GlobeHandles {
   imagery: LayerHandle
@@ -89,10 +92,15 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
       })
     },
     flyToExtent() {
-      viewer.camera.flyTo({
-        destination: Cesium.Rectangle.fromDegrees(-160, -70, 160, 70),
-        duration: 1.2,
-      })
+      // 不再硬编码 (-160,-70,160,70)：那只是"大致全球"，对着一景局部影像
+      // 点"范围"会飞到完全无关的地方。改成飞到当前相机正在看的那一块；
+      // 看不到地面（相机在太空里）时才退回全球范围。
+      const visible = viewer.camera.computeViewRectangle(
+        viewer.scene.globe.ellipsoid,
+        globeRectangleScratch,
+      )
+      const destination = visible ? visible : defaultWorldRectangle(globeRectangleScratch)
+      viewer.camera.flyTo({ destination, duration: 1.2 })
     },
     flyHome() {
       viewer.camera.cancelFlight()
@@ -105,7 +113,12 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
   }
 }
 
-export type SketchKind = "point" | "line" | "polygon" | "distance" | "area" | "height"
+/** Cesium 的 Rectangle 是可变对象，复用同一个避免每次分配。 */
+const globeRectangleScratch = new Cesium.Rectangle()
+
+function defaultWorldRectangle(scratch: Cesium.Rectangle): Cesium.Rectangle {
+  return Cesium.Rectangle.fromDegrees(-160, -70, 160, 70, scratch)
+}
 
 /**
  * 可辨识联合：按 `type` 就能收窄出对应的坐标层级。

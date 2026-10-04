@@ -4,10 +4,10 @@ version: 0.1.0
 mode: reference
 capabilities: [search]
 credentials: [service_account]
-license_note: "需要 Google Earth Engine 账号。未配置前不发出请求。条款以 Google 官方说明为准。"
+license_note: "未接入：需要 Google Earth Engine 账号与 service account，导出走入库而非直接给瓦片。条款以 Google 官方说明为准。"
 cache_allowed: false
-status: implemented
-availability: needs_config
+status: skeleton
+availability: skeleton
 drape: false
 picker: null
 entrypoint: provider:GeeProvider

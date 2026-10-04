@@ -19,6 +19,7 @@ import { pollJob } from "./api/jobs"
 import { resolveGlobeConfig } from "./config"
 import { configureCesium } from "./map/cesiumLayers"
 import { asGeoGeometry, startGlobe, type GeoGeometry, type GlobeHandles } from "./map/globe"
+import { isSketchKind, type SketchKind } from "./map/sketchKind"
 import { DEMO_SCENES, splitFromPointer, toLayerSpec, type SwipeScene } from "./map/swipe"
 import type { LayerHandle } from "./map/layerTypeRegistry"
 import { addBookmark, coordinateError, readBookmarks, writeBookmarks, type Bookmark } from "./map/bookmarks"
@@ -106,6 +107,10 @@ watch(swipeOn, async (enabled) => {
     swipeRight?.remove()
     swipeLeft = null
     swipeRight = null
+    // 顺手把分隔条归位。不重置的话下次打开卷帘，分隔条会停在上次拖到的位置，
+    // 看着像是没生效。
+    handles.setSplitPosition(0)
+    split.value = 0.5
     handles.imagery.setShow(imageryOn.value)
     attribution.value = [handles.imagery.attribution, handles.terrain.attribution, handles.tileset?.attribution ?? ""]
       .filter(Boolean)
@@ -177,10 +182,14 @@ function onLayerRemove(id: string): void {
   managedLayers.value = withoutLayer(managedLayers.value, id)
 }
 
-function onSketch(kind: string): void {
+function onSketch(kind: SketchKind): void {
+  // emit 的类型已经是联合类型，按钮里拼错会被 vue-tsc 拦下；这里再收一次是
+  // 运行时兜底。之前那句 `handles?.beginSketch(kind as "point")` 把整个联合按成了
+  // "point"，等于编译器彻底不管这件事。
+  if (!isSketchKind(kind)) return
   sketching.value = true
   toolMessage.value = ""
-  handles?.beginSketch(kind as "point")
+  handles?.beginSketch(kind)
 }
 
 async function onFinish(): Promise<void> {
@@ -502,12 +511,19 @@ function startDrag(event: PointerEvent): void {
     split.value = splitFromPointer(pointer.clientX, bounds.left, bounds.width)
     handles?.setSplitPosition(split.value)
   }
+  // pointercancel 与 blur 也要解绑：否则在指针捕获丢失（切标签页、系统弹窗、
+  // 触控被系统接管）时 move/stop 会一直挂着，下一次拖拽解绑的是新一组监听，
+  // 旧的泄漏掉。stop 里的 removeEventListener 是幂等的，多解一次无害。
   const stop = () => {
     window.removeEventListener("pointermove", move)
     window.removeEventListener("pointerup", stop)
+    window.removeEventListener("pointercancel", stop)
+    window.removeEventListener("blur", stop)
   }
   window.addEventListener("pointermove", move)
   window.addEventListener("pointerup", stop)
+  window.addEventListener("pointercancel", stop)
+  window.addEventListener("blur", stop)
   move(event)
 }
 </script>

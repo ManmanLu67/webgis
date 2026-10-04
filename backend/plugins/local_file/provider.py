@@ -1,9 +1,11 @@
+from typing import ClassVar
+
 from app.providers.protocol import CatalogItem, LayerSpec
 
 
 class LocalFileProvider:
     id = "local_file"
-    capabilities = {"search", "ingest"}
+    capabilities: ClassVar[set[str]] = {"search", "ingest"}
     availability = "ready"
 
     def authenticate(self, config: dict) -> None:

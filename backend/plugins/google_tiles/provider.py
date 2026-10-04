@@ -75,7 +75,7 @@ def _create_session(key: str) -> str:
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             document = json.loads(response.read().decode())
-    except Exception as exc:  # noqa: BLE001 — 把官方接口失败转成不含密钥的说明
+    except Exception as exc:
         raise ValueError("官方地图瓦片会话创建失败") from exc
     session = document.get("session")
     if not session:

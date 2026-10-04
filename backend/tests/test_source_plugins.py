@@ -125,10 +125,11 @@ def test_installed_plugins_expose_status_without_naming_them_in_the_catalog(buil
     rows = {row["id"]: row["availability"] for row in client.get("/providers").json()}
     assert rows["public_stac"] == "ready"
     assert rows["arcgis_wayback"] == "ready"
-    assert rows["gee"] == "needs_config"
     assert rows["google_tiles"] == "needs_config"
     assert rows["jilin1"] == "skeleton"
     assert rows["beijing1"] == "skeleton"
+    # gee 没接真实接口，所以是骨架而不是"待配置"——配了账号它也不会去调
+    assert rows["gee"] == "skeleton"
     catalog = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "app" / "catalog").glob("*.py"))
     assert "public_stac" not in catalog
     assert "jilin1" not in catalog

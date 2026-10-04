@@ -2,13 +2,14 @@ import json
 import re
 import urllib.request
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from app.providers.protocol import CatalogItem, LayerSpec
 
 
 class WaybackProvider:
     id = "arcgis_wayback"
-    capabilities = {"search", "temporal"}
+    capabilities: ClassVar[set[str]] = {"search", "temporal"}
     availability = "ready"
 
     def __init__(self, urlopen=None) -> None:

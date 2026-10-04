@@ -205,11 +205,37 @@ def test_shipped_plugins_keep_their_declared_availability():
     for pid in ("public_stac", "gibs", "arcgis_wayback", "custom_xyz"):
         assert by_id[pid]["availability"] == "ready", pid
         assert by_id[pid]["drape"] is True, pid
-    for pid in ("gee", "google_tiles", "tianditu", "tencent_map"):
+    for pid in ("google_tiles", "tianditu", "tencent_map"):
         assert by_id[pid]["availability"] == "needs_config", pid
-    for pid in ("jilin1", "beijing1", "shiji", "siwei"):
+    for pid in ("jilin1", "beijing1", "shiji", "siwei", "gee"):
         assert by_id[pid]["availability"] == "skeleton", pid
         assert by_id[pid]["status"] == "skeleton", pid
+
+
+def test_no_plugin_claims_implemented_while_refusing_to_search():
+    """status 写 implemented 却在 search 里抛 NotImplementedError，就是界面在说谎。
+
+    gee 原先就是这样：manifest 写 implemented，配了账号 `search()` 也抛错，
+    于是它在弹层里看起来可用，点进去才发现不行。
+    """
+    report = load_plugins(ROOT / "plugins")
+    for item in report.loaded:
+        if item.manifest["status"] != "implemented":
+            continue
+        provider = item.provider
+        declared = getattr(provider, "availability", item.manifest["availability"])
+        if declared != "ready":
+            continue
+        try:
+            provider.search(None, None, {"fetch": True})
+        except NotImplementedError as exc:
+            pytest.fail(
+                f"{item.manifest['id']} 声明为可用的已实现源，search 却抛 NotImplementedError：{exc}"
+            )
+        except (ValueError, OSError, TimeoutError):
+            # 参数校验失败、或真的去请求外部服务时网络不通，都属于正常路径：
+            # 它们说明代码走到了实际检索逻辑，而不是拒绝提供这个源。
+            pass
 
 
 def test_sample_plugins_load_without_catalog_edits():

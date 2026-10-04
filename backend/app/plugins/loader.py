@@ -133,6 +133,16 @@ def _validate(path: Path, manifest: dict) -> str | None:
 
 
 def _load_entrypoint(plugin_dir: Path, entrypoint: str) -> DataSourceProvider:
+    """按 `module:Class` 载入 Provider。
+
+    刻意**不做**的事：把 `plugins/` 加进 `sys.path`，或者让插件之间能互相 import。
+    那样等于给插件目录开了个共享命名空间——两个插件都叫 `_shared` 就会互相顶掉，
+    而且要靠全局状态才能工作。这里用合成模块名按文件逐个加载，于是每个插件是
+    自足的：想共用代码就复制那一行，或者在插件目录里各自实现。
+
+    代价是 `plugins/_shared.py` 这类"公共模块"根本不成立——它既 import 不到，
+    也提醒不了任何人。要共用就老实复制。
+    """
     module_name, _, class_name = entrypoint.partition(":")
     if not module_name or not class_name:
         raise ValueError(f"entrypoint must be module:Class, got {entrypoint!r}")

@@ -1,6 +1,7 @@
 import json
 import urllib.request
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from app.providers.protocol import CatalogItem, LayerSpec
 
@@ -9,7 +10,7 @@ class PublicStacProvider:
     """通用 STAC 检索。端点、集合和资产名都来自清单，不写死卫星波段。"""
 
     id = "public_stac"
-    capabilities = {"search", "temporal"}
+    capabilities: ClassVar[set[str]] = {"search", "temporal"}
     availability = "ready"
 
     def __init__(self, urlopen=None) -> None:
@@ -68,7 +69,10 @@ class PublicStacProvider:
         preview = _preview_href(assets)
         properties = feature.get("properties") or {}
         when = properties.get("datetime") or "2020-01-01T00:00:00Z"
-        acquired = datetime.fromisoformat(str(when).replace("Z", "+00:00"))
+        # STAC 的 datetime 允许不带时区；目录里的 acquired_at 要求带，
+        # 混着存会让时序检索按错误的边界排序。Python 3.11 起 fromisoformat
+        # 直接认结尾的 Z，不需要手工替换。
+        acquired = datetime.fromisoformat(str(when))
         if acquired.tzinfo is None:
             acquired = acquired.replace(tzinfo=UTC)
         cloud = properties.get("eo:cloud_cover")

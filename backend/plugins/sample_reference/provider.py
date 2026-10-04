@@ -1,11 +1,12 @@
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from app.providers.protocol import CatalogItem, LayerSpec
 
 
 class ReferenceProvider:
     id = "sample_reference"
-    capabilities = {"search", "temporal"}
+    capabilities: ClassVar[set[str]] = {"search", "temporal"}
 
     def authenticate(self, config: dict) -> None:
         return None
