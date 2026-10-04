@@ -1,0 +1,184 @@
+openapi: 3.1.0
+info:
+  title: COG 切片服务
+  version: 0.1.0
+  description: |
+    入库后的 COG 通过默认切片服务出瓦片，同时给出三套地址，服务三类不同消费者。
+
+    这套路由由 TiTiler 贡献，随它的版本变化。**本文件记录的是平台自己承诺的那
+    一部分**，不是切片库的完整 API 镜像——平台不承诺的端点不会出现在这里，
+    也不应因为这里没写就认为它不存在。挂了哪些路由可运行
+    `tests/test_tile_service.py` 核对，那份测试用真实请求打真实路由。
+
+    前缀默认 `/cog`，**注意它不带 `/api`**：切片服务不是目录 API 的一部分，
+    网关对两者做不同的处理（`/api` 剥掉前缀，`/cog` 原样透传）。
+
+    ## `url=` 的安全边界
+
+    所有切片端点都靠 `url=` 参数指明要打开哪个 COG，而 GDAL 打开地址意味着
+    一次任意文件读取或一次服务端请求。因此：
+
+    - 默认**只放行** `WEBGIS_DATA_DIR` 之下的 `.tif` / `.tiff`，路径先 resolve
+      再判包含关系，所以 `../` 穿越与指向目录外的软链都挡得住；
+    - `file://` 一律拒绝；
+    - 远程地址必须在 `WEBGIS_REMOTE_COG_HOSTS` 里显式列出主机才放行，
+      默认一个都不放行。
+
+    违反上述约束时返回 403。这是接上切片服务后立刻出现的新攻击面，
+    不设边界等于开了一个任意文件读取接口。
+servers:
+  - url: http://localhost:8080/cog
+    description: 默认部署经 Caddy 网关暴露的切片服务（前缀原样透传）
+paths:
+  /tiles/{tileMatrixSetId}/{z}/{x}/{y}:
+    get:
+      summary: 取一块瓦片
+      description: |
+        动态切片，无状态。XYZ 模板用的就是这套地址（占位符名不同但逐一对应）。
+
+        请求的瓦片落在影像范围外时返回 404 —— 浏览器本来就会请求越界瓦片，
+        这是正常情况，不是故障，所以不该是 500 加一段栈回溯。
+      parameters:
+        - in: path
+          name: tileMatrixSetId
+          required: true
+          description: 由 `WEBGIS_TILE_MATRIX_SETS` 决定，默认只有 WebMercatorQuad 与 WGS1984Quad
+          schema: { type: string }
+        - in: path
+          name: z
+          required: true
+          schema: { type: integer }
+        - in: path
+          name: x
+          required: true
+          schema: { type: integer }
+        - in: path
+          name: y
+          required: true
+          schema: { type: integer }
+        - $ref: "#/components/parameters/CogUrl"
+      responses:
+        "200":
+          description: 一块瓦片
+          content:
+            image/png: {}
+        "403":
+          description: 地址不在允许范围内
+        "404":
+          description: 瓦片落在影像范围外
+  /tiles/{tileMatrixSetId}/{z}/{x}/{y}.{format}:
+    get:
+      summary: 取一块指定格式的瓦片
+      parameters:
+        - in: path
+          name: tileMatrixSetId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: z
+          required: true
+          schema: { type: integer }
+        - in: path
+          name: x
+          required: true
+          schema: { type: integer }
+        - in: path
+          name: y
+          required: true
+          schema: { type: integer }
+        - in: path
+          name: format
+          required: true
+          schema: { type: string, enum: [png, jpeg, webp, tiff] }
+        - $ref: "#/components/parameters/CogUrl"
+      responses:
+        "200":
+          description: 一块瓦片
+        "403":
+          description: 地址不在允许范围内
+        "404":
+          description: 瓦片落在影像范围外
+  /WMTSCapabilities.xml:
+    get:
+      summary: WMTS capabilities 文档
+      description: |
+        同一份文档同时喂给 Cesium、QGIS 与 ArcGIS Pro，所以它是 OGC 兼容性的
+        主要验证点。
+
+        `use_epsg=true` 让 `ows:SupportedCRS` 写成 `EPSG:3857` 而不是
+        `urn:ogc:def:crs:EPSG::3857` —— 这是 ArcGIS Pro 能否直接添加的关键，
+        也是 `docs/SPEC.md` 待确认事项第 3 条的答案。
+
+        文档里的 Layer 标识是 `<COG 文件名>_<TileMatrixSet>_default`。入库路径写
+        出的文件名就是 item id，所以标识对同一景反复取值不变，客户端重新连接时
+        才认得出还是同一个图层。
+      parameters:
+        - name: use_epsg
+          description: 用 EPSG 码而非 URN 表示坐标系
+          schema: { type: boolean, default: false }
+        - $ref: "#/components/parameters/CogUrl"
+      responses:
+        "200":
+          description: WMTS capabilities 文档
+          content:
+            application/xml: {}
+        "403":
+          description: 地址不在允许范围内
+  /preview:
+    get:
+      summary: 渲染一张预览图
+      description: 覆盖范围有限、拼不出瓦片模板时的退路，cog 类型的图层用它。
+      parameters:
+        - $ref: "#/components/parameters/CogUrl"
+      responses:
+        "200":
+          description: 一张预览图
+        "403":
+          description: 地址不在允许范围内
+  /info:
+    get:
+      summary: 影像基本信息
+      parameters:
+        - $ref: "#/components/parameters/CogUrl"
+      responses:
+        "200":
+          description: 波段数、尺寸、范围等
+        "403":
+          description: 地址不在允许范围内
+  /info.geojson:
+    get:
+      summary: 影像基本信息（GeoJSON 形式）
+      parameters:
+        - $ref: "#/components/parameters/CogUrl"
+      responses:
+        "200":
+          description: 一个 GeoJSON Feature，属性为影像信息
+        "403":
+          description: 地址不在允许范围内
+  /{tileMatrixSetId}/tilejson.json:
+    get:
+      summary: TileJSON 文档
+      description: |
+        QGIS 与 MapLibre 直接读 TileJSON，所以它比 capabilities 更省事。
+        里面的 `tiles` 数组就是 `/tiles/{tms}/{z}/{x}/{y}` 那套地址。
+      parameters:
+        - in: path
+          name: tileMatrixSetId
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/CogUrl"
+      responses:
+        "200":
+          description: TileJSON 文档
+        "403":
+          description: 地址不在允许范围内
+components:
+  parameters:
+    CogUrl:
+      name: url
+      in: query
+      required: true
+      description: |
+        待切片的 COG 地址。默认只允许数据目录下的本地 GeoTIFF；远程地址需要在
+        `WEBGIS_REMOTE_COG_HOSTS` 里显式放行。地址里有空格等特殊字符时需 URL 编码。
+      schema: { type: string }

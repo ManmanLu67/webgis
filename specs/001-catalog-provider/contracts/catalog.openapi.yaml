@@ -1,11 +1,29 @@
 openapi: 3.1.0
 info:
   title: 目录接口
-  version: 0.1.0
+  version: 0.2.0
+  description: |
+    数据源目录、目录检索与图层描述。
+
+    图层描述（`Layer`）由参考型与入库型共用同一套字段，这是宪章 C3 的要求。
+    其中 `tiling_scheme` 描述瓦片网格（Cesium 按它摆放瓦片，是唯一参与渲染
+    决策的字段），`crs` 描述数据基准（服务方已重投影进网格，只用于署名与合规
+    声明，不参与渲染）。两者混为一谈会导致误判——天地图正是
+    `crs=EPSG:4490` + `tiling_scheme=WebMercator` 的组合。
+
+    切片与 WMTS 的地址不在本文件，见 `specs/002-ingest-publish/contracts/tiles.openapi.yaml`。
+servers:
+  - url: http://localhost:8080/api
+    description: 默认部署经 Caddy 网关暴露的目录 API（网关剥掉 /api 前缀）
 paths:
   /providers:
     get:
       summary: 列出数据源
+      description: |
+        返回全部已加载的数据源。`drape` 与 `picker` 是前端「图层」弹层的全部依据：
+        `drape` 为 true 的源才可能出现在弹层里，`picker` 决定界面上要问什么
+        （填模板 / 填地图范围 / 选时间）。需要密钥、骨架、未实现的源一律
+        `drape: false`——宪章 C4：没 Key 不请求。
       parameters:
         - in: query
           name: include_disabled
@@ -18,6 +36,80 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Provider" }
+  /providers/errors:
+    get:
+      summary: 插件加载错误
+      description: |
+        加载期失败的插件及其原因。一个插件加载失败 MUST NOT 阻止其他插件加载
+        （宪章 C1），所以失败信息只能在这里汇总暴露。
+      responses:
+        "200":
+          description: "每条一行，形如『插件名: 原因』"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+  /providers/{provider_id}/search:
+    post:
+      summary: 按数据源检索
+      description: |
+        调用插件的 `search`。**注意此操作有副作用**：命中的条目会写入目录，
+        所以它同时也是「登记」动作。`filters.fetch` 由服务端置为 true，
+        插件据此区分「界面真的点了」与「启动时的目录同步」。
+
+        未配置凭据的源返回 409 而不是发请求（宪章 C4）。
+      parameters:
+        - in: path
+          name: provider_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit:
+                  type: integer
+                  default: 1
+                  description: 最多返回几条。`custom_xyz` 忽略此值。
+                datetime:
+                  type: string
+                  description: 单日用 `YYYY-MM-DD`，区间用 STAC 的 `起/止`
+                bbox:
+                  type: array
+                  minItems: 4
+                  maxItems: 4
+                  items: { type: number }
+                  description: 最小经度,最小纬度,最大经度,最大纬度
+                template:
+                  type: object
+                  description: 仅 `custom_xyz` 使用，瓦片地址模板与其声明
+                key:
+                  type: string
+                  description: 按请求传入的凭据。请求级凭据优先于配置。
+      responses:
+        "200":
+          description: 命中条目，已写入目录
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/SearchResultItem" }
+        "400":
+          description: 范围或时间无效
+        "404":
+          description: 未知数据源
+        "409":
+          description: 需要配置凭据
+        "501":
+          description: 该源未实现
   /items:
     get:
       summary: 按 STAC 要素集合检索目录条目
@@ -44,42 +136,172 @@ paths:
   /items/{item_id}/layer:
     get:
       summary: 引用条目或入库条目的共用图层描述
+      description: |
+        参考型与入库型产出同一套字段（宪章 C3）。`variant` 选择同一份数据的不同
+        消费方式，具体支持哪些由发布器自己声明（见响应里的 `variants`）——
+        不支持的组合返回 400 并列出可用值，不静默返回另一种。
       parameters:
+        - in: path
+          name: item_id
+          required: true
+          schema: { type: string }
         - in: query
           name: publisher
+          description: 发布器 id，留空用默认发布器
           schema: { type: string }
+        - in: query
+          name: variant
+          description: |
+            XYZ 瓦片模板 / WMTS capabilities / 单幅预览。参考型条目不经过发布器，
+            没有 variant 概念，传入时返回 400。
+          schema: { type: string, enum: [xyz, wmts, preview], default: xyz }
       responses:
         "200":
           description: 图层文档
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Layer" }
+        "400":
+          description: 未知发布器，或该发布器不支持所选 variant
         "404":
           description: 未知条目
 components:
   schemas:
     Provider:
       type: object
-      required: [id, name, mode, status, enabled]
+      description: |
+        数据源。`availability` 由 plugin.yaml 显式声明并经加载器校验；
+        provider 在 `authenticate()` 之后可将其收紧（例如拿到凭据后
+        `needs_config` → `ready`），此时以 provider 的取值为准。
+      required: [id, name, mode, status, enabled, availability, drape]
       properties:
         id: { type: string }
         name: { type: string }
-        mode: { type: string, enum: [reference, ingest] }
-        status: { type: string, enum: [implemented, skeleton, error] }
+        mode:
+          type: string
+          enum: [reference, ingest]
+          description: 引用型只登记对方给的地址；入库型转 COG 后自己发布
+        status:
+          type: string
+          enum: [implemented, skeleton]
+          description: 未接入的来源必须是 skeleton（宪章 C4）
         enabled: { type: boolean }
+        availability:
+          type: string
+          enum: [ready, needs_config, skeleton]
+        drape:
+          type: boolean
+          description: 是否能铺到地球上。为 false 的源不出现在「图层」弹层
+        picker:
+          type: string
+          enum: [template, extent, time]
+          nullable: true
+          description: 界面上要向用户问什么。`drape` 为 false 时恒为 null
         license_note: { type: string }
         cache_allowed: { type: boolean }
         error: { type: string, nullable: true }
     Layer:
       type: object
-      required: [id, type, url, style, time_dimension]
+      description: |
+        图层描述。参考型与入库型共用（宪章 C3）。
+
+        `url` 是什么形态由 `type` 决定：`xyz` 是含 `{z}/{x}/{y}` 的瓦片模板，
+        `wmts` 是 capabilities 文档地址或 KVP 基地址，`cog` 是单幅影像地址。
+        三套地址总是同时给出（见 `url_template` 与 `wmts_*`），方便图层行里切换。
+      required: [id, type, url, style, time_dimension, publisher_id, variants]
       properties:
         id: { type: string }
-        type: { type: string, enum: [wmts, xyz, cog, terrain, 3dtiles] }
-        url: { type: string }
+        type:
+          type: string
+          enum: [wmts, xyz, cog, terrain, "3dtiles"]
+        url:
+          type: string
+          description: 按 `type` 解释的主地址
         style: { type: object, additionalProperties: true }
-        time_dimension: { type: string, nullable: true }
+        time_dimension:
+          type: string
+          nullable: true
         publisher_id: { type: string }
+        url_template:
+          type: string
+          nullable: true
+          description: XYZ 瓦片模板，便于图层行切换回 XYZ
+        tiling_scheme:
+          type: string
+          enum: [WebMercator, Geographic]
+          description: |
+            瓦片网格。Cesium 只支持这两种；填别的会被前端拒绝并说明原因。
+        max_zoom: { type: integer, nullable: true }
+        layer_kind:
+          type: string
+          enum: [imagery, map]
+        crs:
+          type: string
+          description: |
+            数据基准，例如 EPSG:3857、EPSG:4326、EPSG:4490。**不参与渲染**——
+            服务方已把像素重投影进网格，浏览器拿到的只是编码后的图像字节。
+            GCJ-02 一系不得直接叠到 WGS84 地球上（宪章 C2）。
+        attribution:
+          type: string
+          description: 展示时必须署明的来源
+        license_note:
+          type: string
+          description: 授权与条款声明；`attribution` 为空时用它兜底
+        wmts_capabilities:
+          type: string
+          nullable: true
+          description: WMTS capabilities 文档地址，QGIS 与 ArcGIS Pro 直接消费它
+        wmts_layer:
+          type: string
+          nullable: true
+          description: capabilities 文档里的 Layer 标识
+        wmts_tile_template:
+          type: string
+          nullable: true
+          description: |
+            WMTS 的 RESTful 瓦片模板（含 `{TileMatrix}/{TileCol}/{TileRow}`）。
+            为 null 表示该服务是 KVP 编码，此时用 `url` 作基地址、
+            由 `wmts_*` 各字段补成查询参数（天地图就是这一类）。
+        wmts_style:
+          type: string
+          default: default
+          description: capabilities 里公布的样式名
+        wmts_tile_matrix_set_id:
+          type: string
+          default: WebMercatorQuad
+          description: 格网标识。天地图用 `w`，默认切片服务用 `WebMercatorQuad`
+        wmts_format:
+          type: string
+          default: image/png
+          description: 图像格式。天地图要求 `tiles`，不是标准的 image/jpeg
+        wmts_dimensions:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: 追加到每次请求的静态参数，例如天地图的 `tk`
+        georeference_note:
+          type: string
+          description: 需要在界面上说清的重投影或基准差异
+        variants:
+          type: array
+          description: |
+            该发布器支持的 variant。参考型条目不经过发布器，恒为空数组。
+          items: { type: string, enum: [xyz, wmts, preview] }
+    SearchResultItem:
+      type: object
+      required: [id, title, bbox, time, layer]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        bbox:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { type: number }
+        time:
+          type: string
+          description: 拍摄日期，`YYYY-MM-DD`
+        layer: { $ref: "#/components/schemas/Layer" }
     FeatureCollection:
       type: object
       required: [type, features]
