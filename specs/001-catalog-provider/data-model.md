@@ -68,7 +68,11 @@
 | crs | 字符串，默认 `EPSG:4326`。只用于署名与合规声明，不参与渲染 |
 | attribution | 字符串，默认空。展示署名 |
 | wmts_* | 真 WMTS 的两种编码，见契约 |
-| georeference_note | 字符串，默认空。需要说清的重投影或基准差异 |
+| georeference_note | 字符串，默认空。需要说清的重投影或基准差异，也用来说明轨道间隙来自源数据 |
+| level_zero_tiles_x | 整数，默认 2。Geographic 零级列数。GIBS 的 EPSG:4326 取 10 |
+| level_zero_tiles_y | 整数，默认 1。Geographic 零级行数。GIBS 取 5 |
+| level_offset | 整数，默认 0。URL 级别 = Cesium 级别 + 偏移。GIBS 取 3 |
+| tile_pixel_size | 整数，默认 256。GIBS 为 512 |
 
 ## 关系
 

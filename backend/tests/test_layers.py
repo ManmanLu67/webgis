@@ -27,6 +27,10 @@ FIELDS = {
     "wmts_format",
     "wmts_dimensions",
     "georeference_note",
+    "level_zero_tiles_x",
+    "level_zero_tiles_y",
+    "level_offset",
+    "tile_pixel_size",
     "variants",
 }
 

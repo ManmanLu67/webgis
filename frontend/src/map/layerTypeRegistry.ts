@@ -35,6 +35,14 @@ export interface LayerSpec {
   wmtsDimensions?: Record<string, string>
   /** 需要在界面上说清的重投影 / 基准差异。 */
   georeferenceNote?: string
+  /**
+   * 非标准 Geographic 格网。默认 2×1、偏移 0、256px 就是 Cesium 的零级。
+   * GIBS 的 EPSG:4326 从服务方第 3 级起才是 10×5 的干净金字塔。
+   */
+  levelZeroTilesX?: number
+  levelZeroTilesY?: number
+  levelOffset?: number
+  tilePixelSize?: number
 }
 
 export type SplitSide = "left" | "right" | "none"
@@ -44,6 +52,10 @@ export interface LayerHandle {
   setOpacity(opacity: number): void
   setMaximumScreenSpaceError(value: number): void
   setSplit(side: SplitSide): void
+  /** 在同组影像里上移一层。地形和三维瓦片没有影像栈，实现为空。 */
+  raise(): void
+  /** 在同组影像里下移一层。 */
+  lower(): void
   remove(): void
   readonly attribution: string
 }

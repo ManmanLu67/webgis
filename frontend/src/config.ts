@@ -1,12 +1,6 @@
-export interface LayerSpec {
-  id: string
-  type: "wmts" | "xyz" | "cog" | "terrain" | "3dtiles"
-  url: string
-  opacity?: number
-  show?: boolean
-  maximumScreenSpaceError?: number
-  attribution: string
-}
+import type { LayerSpec } from "./map/layerTypeRegistry"
+
+export type { LayerSpec }
 
 export interface ResolvedGlobe {
   ionToken: string

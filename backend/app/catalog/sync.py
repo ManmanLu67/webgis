@@ -55,7 +55,8 @@ def upsert_found(session: Session, provider_id: str, found) -> None:
             )
         )
         session.flush()
-    if session.get(Item, found.id) is None:
+    row = session.get(Item, found.id)
+    if row is None:
         row = Item(
             id=found.id,
             collection_id=found.collection_id,
@@ -68,9 +69,19 @@ def upsert_found(session: Session, provider_id: str, found) -> None:
             asset_href=found.asset_href,
             access_mode=found.access_mode,
         )
-        # 顺手填 geometry，空间索引才有东西可指；没有 PostGIS 时存 WKT 文本。
-        populate_item_geometry(session.get_bind(), row)
         session.add(row)
+    else:
+        row.collection_id = found.collection_id
+        row.minx = found.minx
+        row.miny = found.miny
+        row.maxx = found.maxx
+        row.maxy = found.maxy
+        row.acquired_at = found.acquired_at
+        row.cloud_cover = found.cloud_cover
+        row.asset_href = found.asset_href
+        row.access_mode = found.access_mode
+    # 顺手填 geometry，空间索引才有东西可指；没有 PostGIS 时存 WKT 文本。
+    populate_item_geometry(session.get_bind(), row)
 
 
 def _config_json(plugin) -> str:

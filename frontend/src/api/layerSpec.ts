@@ -25,6 +25,10 @@ export interface WireLayerSpec {
   wmts_format?: string
   wmts_dimensions?: Record<string, string> | null
   georeference_note?: string
+  level_zero_tiles_x?: number
+  level_zero_tiles_y?: number
+  level_offset?: number
+  tile_pixel_size?: number
   variants?: string[]
 }
 
@@ -66,6 +70,10 @@ export function toMountableLayer(wire: WireLayerSpec, fallbackId: string): Layer
   if (wire.url_template) spec.urlTemplate = wire.url_template
   if (wire.crs) spec.crs = wire.crs
   if (wire.georeference_note) spec.georeferenceNote = wire.georeference_note
+  if (typeof wire.level_zero_tiles_x === "number") spec.levelZeroTilesX = wire.level_zero_tiles_x
+  if (typeof wire.level_zero_tiles_y === "number") spec.levelZeroTilesY = wire.level_zero_tiles_y
+  if (typeof wire.level_offset === "number") spec.levelOffset = wire.level_offset
+  if (typeof wire.tile_pixel_size === "number") spec.tilePixelSize = wire.tile_pixel_size
   if (wire.wmts_capabilities) spec.wmtsCapabilities = wire.wmts_capabilities
   if (wire.wmts_layer) spec.wmtsLayer = wire.wmts_layer
   if (wire.wmts_tile_template) spec.wmtsTileTemplate = wire.wmts_tile_template

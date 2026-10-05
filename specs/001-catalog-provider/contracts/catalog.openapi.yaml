@@ -124,7 +124,16 @@ paths:
           schema: { type: string }
         - in: query
           name: cloud_cover_lt
+          description: 只要云量已知且低于这个值的条目。云量没填的不算。
           schema: { type: number }
+        - in: query
+          name: limit
+          description: 最多返回多少条。不传则不截断。
+          schema: { type: integer, minimum: 0 }
+        - in: query
+          name: offset
+          description: 跳过前多少条。配合 limit 翻页。
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
         "200":
           description: STAC 要素集合
@@ -200,6 +209,27 @@ components:
             界面上要向用户问什么。`drape` 为 false 时恒为 null。
             `time` 选时相（入口是自选日期加最近一景），`recent` 则不选时间，
             直接列出本机用过的图层。
+        products:
+          type: array
+          description: |
+            同一数据源下可选的产品。没有可选项时为空数组。
+            `seam` 说明这一景是单日无缝、单日带轨道间隙、多日合成还是静态合成，
+            界面据此标注，避免把源数据的空洞当成拼接错误。
+          items:
+            type: object
+            required: [id, title, seam, seam_label, resolution, dated, note]
+            properties:
+              id: { type: string }
+              title: { type: string }
+              seam:
+                type: string
+                enum: [daily-seamless, daily-gaps, composite, static]
+              seam_label: { type: string }
+              resolution: { type: string }
+              dated:
+                type: boolean
+                description: 为 false 时没有时间维，界面不要求选日期
+              note: { type: string }
         license_note: { type: string }
         cache_allowed: { type: boolean }
         error: { type: string, nullable: true }
@@ -285,6 +315,26 @@ components:
         georeference_note:
           type: string
           description: 需要在界面上说清的重投影或基准差异
+        level_zero_tiles_x:
+          type: integer
+          default: 2
+          description: |
+            Geographic 格网零级的列数。默认 2 就是 Cesium 的标准零级。
+            GIBS 的 EPSG:4326 从第 3 级起才对齐，零级取 10。
+        level_zero_tiles_y:
+          type: integer
+          default: 1
+          description: Geographic 格网零级的行数。GIBS 4326 取 5。
+        level_offset:
+          type: integer
+          default: 0
+          description: |
+            URL 里的级别 = Cesium 级别 + 这个偏移。GIBS 用 3，
+            因为可用金字塔从服务方的第 3 级开始。
+        tile_pixel_size:
+          type: integer
+          default: 256
+          description: 单片像素边长。GIBS 是 512，其余源保持 256。
         variants:
           type: array
           description: |

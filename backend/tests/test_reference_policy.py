@@ -93,8 +93,46 @@ def test_gibs_defaults_to_a_lagged_day_and_keeps_the_chosen_day():
     assert len(items) >= 2
     assert "gibs.earthdata.nasa.gov" in items[0].asset_href
     layer = provider.get_layer_spec(items[0].id)
-    assert layer.crs == "EPSG:3857"
+    assert layer.crs == "EPSG:4326"
+    assert layer.tiling_scheme == "Geographic"
+    assert layer.max_zoom == 5
+    assert layer.level_zero_tiles_x == 10
+    assert layer.level_zero_tiles_y == 5
+    assert layer.level_offset == 3
+    assert layer.tile_pixel_size == 512
+    assert "epsg4326" in layer.url
+    assert "VIIRS_SNPP_CorrectedReflectance_TrueColor" in layer.url
+    assert "{gibsLevel}" in layer.url
+    assert items[0].miny == -90 and items[0].maxy == 90
     assert "NASA" in layer.attribution
+    # 重启后不靠内存：同一个 id 在新实例上也能重建
+    fresh = _load("gibs", "GibsProvider")
+    assert fresh.get_layer_spec(items[0].id).url == layer.url
+
+
+def test_gibs_products_switch_the_layer_and_mark_seams():
+    provider = _load("gibs", "GibsProvider")
+    provider.authenticate({})
+    listed = {row["id"]: row for row in provider.products()}
+    assert listed["viirs-snpp"]["seam"] == "daily-seamless"
+    assert listed["modis-terra"]["seam"] == "daily-gaps"
+    assert listed["bluemarble"]["dated"] is False
+    latest = datetime.now(UTC).date() - timedelta(days=5)
+    start = datetime(latest.year, latest.month, latest.day, tzinfo=UTC)
+    terra = provider.search(None, (start, start + timedelta(days=1)), {"fetch": True, "product": "modis-terra"})
+    assert "MODIS_Terra_CorrectedReflectance_TrueColor" in terra[0].asset_href
+    assert provider.get_layer_spec(terra[0].id).max_zoom == 5
+    marble = provider.search(None, None, {"fetch": True, "product": "bluemarble"})
+    assert len(marble) == 1
+    assert "/default/500m/" in marble[0].asset_href
+    assert marble[0].acquired_at.date().isoformat() not in marble[0].asset_href
+    assert provider.get_layer_spec(marble[0].id).max_zoom == 4
+    try:
+        provider.search(None, None, {"fetch": True, "product": "nope"})
+    except ValueError as exc:
+        assert "没有这个" in str(exc)
+    else:
+        raise AssertionError("未知产品应当拒绝")
 
 
 def test_tianditu_does_not_request_without_a_key():

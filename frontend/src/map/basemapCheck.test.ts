@@ -40,6 +40,17 @@ describe("底图预检", () => {
     expect(verdict).toMatchObject({ ok: false, host: "tile.example.com", reason: "连不上" })
   })
 
+  it("调用方取消时不当成底图失败", async () => {
+    const parent = new AbortController()
+    const fetchImpl = (async () => {
+      parent.abort()
+      throw new DOMException("aborted", "AbortError")
+    }) as unknown as typeof fetch
+    await expect(checkBasemap({ url: TEMPLATE, fetchImpl, signal: parent.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    })
+  })
+
   it("超时按超时说，不含混成别的错", async () => {
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
       await new Promise((_resolve, reject) => {

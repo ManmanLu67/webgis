@@ -64,6 +64,28 @@ describe("线上图层描述转换", () => {
     expect(spec.georeferenceNote).toBe("CGCS2000 基准")
   })
 
+  it("Geographic 格网的零级行列、偏移和瓦片像素会透传", () => {
+    const spec = toMountableLayer(
+      {
+        type: "xyz",
+        url: "https://example.invalid/{gibsLevel}/{y}/{x}.jpg",
+        tiling_scheme: "Geographic",
+        max_zoom: 5,
+        level_zero_tiles_x: 10,
+        level_zero_tiles_y: 5,
+        level_offset: 3,
+        tile_pixel_size: 512,
+      },
+      "gibs",
+    )
+    expect(spec.tilingScheme).toBe("Geographic")
+    expect(spec.maxZoom).toBe(5)
+    expect(spec.levelZeroTilesX).toBe(10)
+    expect(spec.levelZeroTilesY).toBe(5)
+    expect(spec.levelOffset).toBe(3)
+    expect(spec.tilePixelSize).toBe(512)
+  })
+
   it("cog 图层保持为单幅影像类型，不被当成 XYZ 模板", () => {
     const spec = toMountableLayer({ type: "cog", url: "/cog/preview?url=x" }, "fallback")
     expect(spec.type).toBe("cog")

@@ -68,6 +68,7 @@ def search_provider(provider_id: str, body: dict, request: Request) -> dict:
                 "limit": body.get("limit") or 1,
                 "template": body.get("template"),
                 "key": body.get("key"),
+                "product": body.get("product"),
             },
         )
     except NotImplementedError as exc:
@@ -106,6 +107,8 @@ def list_items(
     bbox: str | None = None,
     datetime: str | None = None,
     cloud_cover_lt: float | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> dict:
     try:
         parsed_bbox = parse_bbox(bbox) if bbox else None
@@ -119,6 +122,8 @@ def list_items(
             bbox=parsed_bbox,
             datetime_range=parsed_datetime,
             cloud_cover_lt=cloud_cover_lt,
+            limit=limit,
+            offset=offset,
         )
         return items_to_feature_collection(items)
     finally:
@@ -163,6 +168,7 @@ def item_layer(
             row.type = spec.type
             row.publisher_id = spec.publisher_id
             row.time_dimension = spec.time_dimension
+            row.style_json = json.dumps(spec.style)
         session.commit()
         payload = _layer_payload(spec)
         # 参考型图层不经过发布器，没有 variant 概念；但字段集必须一致（宪章 C3）。
@@ -211,11 +217,13 @@ async def upload_job(
     acquired_at: str = Form(...),
 ) -> dict:
     try:
-        datetime.fromisoformat(acquired_at)
+        acquired = datetime.fromisoformat(acquired_at)
     except ValueError as exc:
         raise HTTPException(
             status_code=400, detail="acquired_at must be a timezone-aware timestamp"
         ) from exc
+    if acquired.tzinfo is None:
+        raise HTTPException(status_code=400, detail="acquired_at must be a timezone-aware timestamp")
 
     settings: Settings = request.app.state.settings
     suffix = Path(file.filename or "upload.bin").suffix.lower()
@@ -341,6 +349,7 @@ async def tile_timing(
         "duration_ms": round(duration_ms, 2),
         "cache": cache,
         "sampled": True,
+        "ok": response.status_code < 400,
         "status": response.status_code,
         "bytes": len(response.content),
         "server_timing": response.headers.get("server-timing"),
@@ -385,6 +394,10 @@ def _layer_payload(spec, license_note: str = "") -> dict:
         "wmts_format": spec.wmts_format,
         "wmts_dimensions": spec.wmts_dimensions,
         "georeference_note": spec.georeference_note,
+        "level_zero_tiles_x": spec.level_zero_tiles_x,
+        "level_zero_tiles_y": spec.level_zero_tiles_y,
+        "level_offset": spec.level_offset,
+        "tile_pixel_size": spec.tile_pixel_size,
         "variants": [],
     }
 
@@ -412,9 +425,18 @@ def _layer_document(plugin, item) -> dict:
     return _layer_payload(spec, license_note=note)
 
 
-def _availability(row: Provider) -> str:
+def _availability(row: Provider, plugin=None) -> str:
+    """列表与搜索用同一个真值。
+
+    搜索读的是 provider 当前的 `availability`（authenticate 之后可能收紧）。
+    列表过去只读启动时写进 `config_json` 的快照，认证之后两边会分叉。
+    有活的 provider 就以它为准，快照只在插件没加载出来时兜底。
+    """
     if row.status == "skeleton":
         return "skeleton"
+    live = getattr(getattr(plugin, "provider", None), "availability", None)
+    if isinstance(live, str) and live:
+        return live
     try:
         config = json.loads(row.config_json or "{}")
     except json.JSONDecodeError:
@@ -433,10 +455,15 @@ def _search_datetime(body: dict):
         except SearchError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
-        day = datetime.fromisoformat(text[:10]).replace(tzinfo=UTC)
+        parsed = datetime.fromisoformat(text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="时间格式无效") from exc
-    return day, day + timedelta(days=1)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    # 只有日期时按那一天；带了时刻就从那个时刻起算 24 小时。上界都是开的。
+    if "T" not in text:
+        parsed = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+    return parsed, parsed + timedelta(days=1)
 
 
 def _provider_document(row: Provider, plugin=None) -> dict:
@@ -447,9 +474,11 @@ def _provider_document(row: Provider, plugin=None) -> dict:
     骨架或未配置的源一律不进弹层（宪章 C4：没 Key 不请求）。
     """
     manifest = plugin.manifest if plugin is not None else {}
-    availability = _availability(row)
+    availability = _availability(row, plugin)
     usable = availability == "ready" and row.status != "skeleton"
     drape = bool(manifest.get("drape")) and usable
+    listed = getattr(getattr(plugin, "provider", None), "products", None)
+    products = listed() if callable(listed) else []
     return {
         "id": row.id,
         "name": row.name,
@@ -462,4 +491,5 @@ def _provider_document(row: Provider, plugin=None) -> dict:
         "availability": availability,
         "drape": drape,
         "picker": manifest.get("picker") if drape else None,
+        "products": products if drape else [],
     }

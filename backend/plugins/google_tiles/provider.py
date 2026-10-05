@@ -14,14 +14,16 @@ class GoogleTilesProvider:
 
     def __init__(self) -> None:
         self._layers: dict[str, LayerSpec] = {}
+        self._key = ""
 
     def authenticate(self, config: dict) -> None:
         secrets = config.get("secrets") or {}
         required = config.get("credentials") or []
+        self._key = str(secrets.get("api_key") or "")
         self.availability = "needs_config" if required and not secrets else "ready"
 
     def search(self, bbox, datetime_range, filters) -> list[CatalogItem]:
-        key = str((filters or {}).get("key") or "")
+        key = str((filters or {}).get("key") or self._key)
         if not key or not (filters or {}).get("fetch"):
             return []
         session = _create_session(key)

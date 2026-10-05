@@ -19,6 +19,8 @@ export interface BasemapCheckInput {
   url: string
   fetchImpl?: typeof fetch
   timeoutMs?: number
+  /** 组件卸载时取消。取消不是底图失败，调用方不该据此显示「底图未加载」。 */
+  signal?: AbortSignal
 }
 
 export type BasemapVerdict =
@@ -68,15 +70,27 @@ export async function checkBasemap(input: BasemapCheckInput): Promise<BasemapVer
     return { ok: false, host, reason: "底图地址不是合法的 URL" }
   }
 
+  if (input.signal?.aborted) throw new DOMException("地球已卸载", "AbortError")
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeout)
+  const onParentAbort = () => controller.abort()
+  input.signal?.addEventListener("abort", onParentAbort)
   try {
     const response = await doFetch(probeUrl(template), { signal: controller.signal })
+    if (input.signal?.aborted) throw new DOMException("地球已卸载", "AbortError")
     if (!response.ok) {
       return { ok: false, host, reason: `HTTP ${response.status}` }
     }
     return { ok: true }
   } catch (error) {
+    // 超时是预检自己的 AbortController。调用方取消要原样抛回去，
+    // 不能写成「底图未加载」，否则卸载竞态会在新页面上留下一条假警告。
+    if (input.signal?.aborted) {
+      throw error instanceof DOMException && error.name === "AbortError"
+        ? error
+        : new DOMException("地球已卸载", "AbortError")
+    }
     const aborted = error instanceof DOMException && error.name === "AbortError"
     return {
       ok: false,
@@ -85,6 +99,7 @@ export async function checkBasemap(input: BasemapCheckInput): Promise<BasemapVer
     }
   } finally {
     clearTimeout(timer)
+    input.signal?.removeEventListener("abort", onParentAbort)
   }
 }
 

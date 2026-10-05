@@ -1,5 +1,6 @@
 import * as Cesium from "cesium"
 import { checkGeoreference } from "./georeference"
+import { tileGridOf } from "./tileGrid"
 import {
   clampOpacity,
   registerLayerType,
@@ -33,19 +34,41 @@ function assertMountable(spec: LayerSpec): void {
 }
 
 function tilingSchemeOf(spec: LayerSpec): Cesium.TilingScheme {
-  return spec.tilingScheme === "Geographic"
-    ? new Cesium.GeographicTilingScheme()
-    : new Cesium.WebMercatorTilingScheme()
+  if (spec.tilingScheme !== "Geographic") return new Cesium.WebMercatorTilingScheme()
+  const grid = tileGridOf(spec)
+  // 默认 2×1 不传参，避免和 Cesium 自己的零级定义分叉。
+  if (grid.levelZeroTilesX === 2 && grid.levelZeroTilesY === 1) {
+    return new Cesium.GeographicTilingScheme()
+  }
+  return new Cesium.GeographicTilingScheme({
+    numberOfLevelZeroTilesX: grid.levelZeroTilesX,
+    numberOfLevelZeroTilesY: grid.levelZeroTilesY,
+  })
 }
 
 function xyzProvider(spec: LayerSpec): Cesium.ImageryProvider {
   assertMountable(spec)
-  return new Cesium.UrlTemplateImageryProvider({
+  const grid = tileGridOf(spec)
+  const options: ConstructorParameters<typeof Cesium.UrlTemplateImageryProvider>[0] = {
     url: spec.url,
     credit: spec.attribution,
     tilingScheme: tilingSchemeOf(spec),
     maximumLevel: spec.maxZoom,
-  })
+  }
+  if (grid.tilePixelSize !== 256) {
+    options.tileWidth = grid.tilePixelSize
+    options.tileHeight = grid.tilePixelSize
+  }
+  // 服务方的级别比 Cesium 的高一截时，不能用 `{z}`：那会被填成 Cesium 级别。
+  if (grid.customLevel) {
+    const offset = grid.levelOffset
+    options.customTags = {
+      gibsLevel(_provider: Cesium.ImageryProvider, _x: number, _y: number, level: number): string {
+        return String(level + offset)
+      },
+    }
+  }
+  return new Cesium.UrlTemplateImageryProvider(options)
 }
 
 /**
@@ -115,6 +138,8 @@ registerLayerType("terrain", (spec) => ({
       setOpacity() {},
       setMaximumScreenSpaceError() {},
       setSplit() {},
+      raise() {},
+      lower() {},
       remove() {},
     } satisfies LayerHandle
   },
@@ -140,6 +165,8 @@ registerLayerType("3dtiles", (spec) => ({
         tileset.maximumScreenSpaceError = value
       },
       setSplit() {},
+      raise() {},
+      lower() {},
       remove() {
         globe.scene.primitives.remove(tileset)
       },
@@ -175,6 +202,12 @@ function imageryController(
               : side === "right"
                 ? Cesium.SplitDirection.RIGHT
                 : Cesium.SplitDirection.NONE
+        },
+        raise() {
+          globe.imageryLayers.raise(layer)
+        },
+        lower() {
+          globe.imageryLayers.lower(layer)
         },
         remove() {
           globe.imageryLayers.remove(layer, true)

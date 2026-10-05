@@ -8,6 +8,8 @@ export interface SwipeScene {
   timeLabel: string
   url: string
   attribution: string
+  /** 挂过的完整描述。卷帘重挂时不能只剩 url，否则自定义格网会丢。 */
+  spec?: LayerSpec
 }
 
 export const DEMO_SCENES: SwipeScene[] = [
@@ -45,6 +47,7 @@ export function sceneOptionLabel(scene: SwipeScene): string {
 }
 
 export function toLayerSpec(scene: SwipeScene): LayerSpec {
+  if (scene.spec) return { ...scene.spec, id: scene.id, show: true, attribution: scene.attribution }
   return {
     id: scene.id,
     type: "xyz",

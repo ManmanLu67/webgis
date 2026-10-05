@@ -42,11 +42,11 @@ const emit = defineEmits<{
   exportGeojson: []
   copy: []
   fly: [lon: number, lat: number]
-  flyExtent: []
+  flyExtent: [id: string]
   saveBookmark: [name: string, lon: number, lat: number]
   useBookmark: [bookmark: Bookmark]
   customXyz: [template: { name: string; url_template: string; tiling_scheme: string; max_zoom: number; layer_kind: string; time: string }]
-  loadSource: [payload: { id: string; name: string; datetime?: string; bbox?: number[] }]
+  loadSource: [payload: { id: string; name: string; datetime?: string; bbox?: number[]; product?: string }]
   useRecentLayer: [entry: RecentLayer]
   uploadCog: [payload: { file: File; acquiredAt: string }]
   refreshJobs: []
@@ -90,6 +90,7 @@ const south = ref("")
 const east = ref("")
 const north = ref("")
 const customDate = ref("")
+const productId = ref("")
 const uploadFile = ref<File | null>(null)
 const uploadDate = ref(today())
 
@@ -161,6 +162,7 @@ function resetPicker(): void {
   times.value = []
   selectedTime.value = ""
   customDate.value = ""
+  productId.value = ""
   pickerError.value = ""
   recentExpanded.value = false
   seedTime.value = ""
@@ -196,8 +198,11 @@ function extentBbox(): number[] | null {
  * "回到以前看过的那一景"才是它的用途，所以直接列出本机用过的图层。
  * 其余按 `picker` 走 —— 判断依据全部来自后端声明，前端不认插件 id。
  */
+const selectedProduct = computed(() => picked.value?.products?.find((item) => item.id === productId.value))
+
 async function chooseSource(source: CatalogSource): Promise<void> {
   picked.value = source
+  productId.value = source.products?.[0]?.id ?? ""
   pickerError.value = ""
   if (source.picker === "template") {
     pickerStep.value = "template"
@@ -279,19 +284,22 @@ async function loadTimes(): Promise<void> {
 
 function confirmTime(): void {
   if (!picked.value) return
+  const product = picked.value.products?.find((item) => item.id === productId.value)
+  const undated = product?.dated === false
   const typed = customDate.value.trim()
   const datetime = typed ? parseLayerDate(typed) : selectedTime.value
-  if (typed && !datetime) {
+  if (!undated && typed && !datetime) {
     pickerError.value = "时间写成 年-月-日，例如 2026-09-23"
     return
   }
-  if (!datetime) return
+  if (!undated && !datetime) return
   const bbox = picked.value.picker === "extent" ? extentBbox() ?? undefined : undefined
   emit("loadSource", {
     id: picked.value.id,
     name: picked.value.name,
-    datetime,
+    datetime: undated ? undefined : (datetime ?? undefined),
     bbox,
+    product: product?.id,
   })
   pickerOpen.value = false
   resetPicker()
@@ -456,10 +464,20 @@ function submitCustom(): void {
             </template>
             <template v-else-if="pickerStep === 'time'">
               <p class="muted">{{ picked?.name }}</p>
-              <label class="field">自选日期
-                <input v-model="customDate" type="text" placeholder="年-月-日" />
+              <label v-if="picked?.products?.length" class="field">产品
+                <select v-model="productId">
+                  <option v-for="product in picked.products" :key="product.id" :value="product.id">
+                    {{ product.title }} · {{ product.seam_label }} · {{ product.resolution }}
+                  </option>
+                </select>
               </label>
-              <p class="hint">按上面的日期检索；留空则用最近一景。</p>
+              <p v-if="selectedProduct" class="hint">{{ selectedProduct.note }}</p>
+              <template v-if="selectedProduct?.dated !== false">
+                <label class="field">自选日期
+                  <input v-model="customDate" type="text" placeholder="年-月-日" />
+                </label>
+                <p class="hint">按上面的日期检索；留空则用最近一景。</p>
+              </template>
               <label v-for="(item, index) in times" :key="item.id" class="check">
                 <span>
                   <input v-model="selectedTime" type="radio" name="layer-time" :value="item.time" />
@@ -509,13 +527,13 @@ function submitCustom(): void {
                   {{ layer.name }}
                 </button>
                 <div v-if="selectedLayer === layer.id" class="detail">
-                  <label class="field">透明度
+                  <label v-if="layer.id !== 'terrain'" class="field">透明度
                     <input type="range" min="0" max="1" step="0.05" :value="layer.opacity" @input="emit('opacity', layer.id, valueOf($event))" />
                   </label>
                   <div class="actions">
                     <button type="button" @click="emit('move', layer.id, 'up')">上移</button>
                     <button type="button" @click="emit('move', layer.id, 'down')">下移</button>
-                    <button type="button" @click="emit('flyExtent')">范围</button>
+                    <button type="button" @click="emit('flyExtent', layer.id)">范围</button>
                     <button type="button" class="danger" @click="emit('remove', layer.id)">删除</button>
                   </div>
                 </div>
@@ -714,10 +732,6 @@ function submitCustom(): void {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   color-scheme: light;
-}
-.field option {
-  color: #14202a;
-  background: #f4f7f8;
 }
 .field option {
   color: #14202a;

@@ -9,7 +9,7 @@
  * 生产期由 Caddy 转发，两边对调用方没有区别。
  */
 
-import { attributionOf, toMountableLayer, type WireLayerSpec } from "./layerSpec"
+import type { WireLayerSpec } from "./layerSpec"
 
 /** 后端出错时的形状。FastAPI 的 HTTPException 一律把说明放在 detail。 */
 export class ApiError extends Error {
@@ -70,6 +70,16 @@ function json(method: string, body: unknown): RequestInit {
 
 // --- 目录 ---
 
+export interface SourceProduct {
+  id: string
+  title: string
+  seam: "daily-seamless" | "daily-gaps" | "composite" | "static"
+  seam_label: string
+  resolution: string
+  dated: boolean
+  note: string
+}
+
 export interface CatalogSource {
   id: string
   name: string
@@ -80,6 +90,7 @@ export interface CatalogSource {
   drape: boolean
   picker: "template" | "extent" | "time" | "recent" | null
   license_note: string
+  products?: SourceProduct[]
 }
 
 export interface SearchResultItem {
@@ -96,7 +107,7 @@ export async function listProviders(): Promise<CatalogSource[]> {
 
 export async function searchProvider(
   providerId: string,
-  body: { limit?: number; datetime?: string; bbox?: number[]; template?: unknown; key?: string },
+  body: { limit?: number; datetime?: string; bbox?: number[]; template?: unknown; key?: string; product?: string },
 ): Promise<SearchResultItem[]> {
   // 空 bbox 与"没给范围"同义，不发到线上。`picker: time` 的源（GIBS、Wayback）
   // 不需要范围，而调用方过去用 `bbox ?? []` 兜底，实际发出去的是 `bbox: []`，
@@ -210,6 +221,7 @@ export interface TileTiming {
   duration_ms: number | null
   cache: "none" | "unverified"
   sampled: boolean
+  ok?: boolean
   status?: number
   bytes?: number
   server_timing?: string | null
@@ -224,4 +236,4 @@ export async function tileTiming(params: { url: string; z?: number; x?: number; 
   return request<TileTiming>(`/tiles/timing?${query}`)
 }
 
-export { attributionOf, toMountableLayer, type WireLayerSpec }
+export type { WireLayerSpec }

@@ -17,20 +17,21 @@ def has_postgis(bind) -> bool:
     return bind.dialect.name == "postgresql"
 
 
-def intersects(column, bbox: tuple[float, float, float, float], bind) -> ColumnElement[bool]:
-    """范围相交条件。
+def intersects(item, bbox: tuple[float, float, float, float], bind) -> ColumnElement[bool]:
+    """范围相交条件。`item` 是带范围列和 geometry 列的映射类。
 
-    有 PostGIS 走 `ST_Intersects`，吃 GIST 索引；没有就退回四个 float 列的
-    比较，语义一致，只是慢一些——本机数据量下完全够用。
+    有 PostGIS 走 `ST_Intersects(geometry, envelope)`，吃 GIST 索引。
+    不能把映射类本身塞进去：`ST_Intersects(Item, …)` 不是对 geometry 列的判断。
+    没有 PostGIS 就退回四个 float 列的比较，语义一致，只是慢一些。
     """
     minx, miny, maxx, maxy = bbox
     if has_postgis(bind):
-        return func.ST_Intersects(column, func.ST_MakeEnvelope(minx, miny, maxx, maxy, 4326))
+        return func.ST_Intersects(item.geometry, func.ST_MakeEnvelope(minx, miny, maxx, maxy, 4326))
     return and_(
-        column.minx <= maxx,
-        column.maxx >= minx,
-        column.miny <= maxy,
-        column.maxy >= miny,
+        item.minx <= maxx,
+        item.maxx >= minx,
+        item.miny <= maxy,
+        item.maxy >= miny,
     )
 
 

@@ -1,7 +1,7 @@
 import * as Cesium from "cesium"
 import type { ResolvedGlobe } from "../config"
 import "./cesiumLayers"
-import { createLayer, type LayerHandle, type LayerSpec, type SplitSide } from "./layerTypeRegistry"
+import { clampOpacity, createLayer, type LayerHandle, type LayerSpec, type SplitSide } from "./layerTypeRegistry"
 import { formatMeasure, heightMeters, pathDistance, ringArea, type LonLat } from "./measure"
 import type { SketchKind } from "./sketchKind"
 
@@ -24,11 +24,44 @@ export interface GlobeHandles {
   /** 放弃当前正在画的草稿，不留下任何实体。 */
   clearSketch(): void
   flyTo(lon: number, lat: number, height?: number): void
-  flyToExtent(): void
+  /** 有范围就飞到那一块；没有则飞到当前视野，视野不着地时退回全球。 */
+  flyToExtent(extent?: { west: number; south: number; east: number; north: number }): void
   flyHome(): void
+  /** 关掉地球、事件和帧率监听。组件卸载时调用，否则 WebGL 上下文留着。 */
+  destroy(): void
 }
 
-export async function startGlobe(container: HTMLElement, config: ResolvedGlobe): Promise<GlobeHandles> {
+function unloaded(): DOMException {
+  return new DOMException("地球已卸载", "AbortError")
+}
+
+function throwIfUnloaded(signal?: AbortSignal): void {
+  if (signal?.aborted) throw unloaded()
+}
+
+/** 容器一开始是 0 高时，渲染循环会跳过绘制且不报错。尺寸回来后再 resize 一次。 */
+function watchContainerSize(viewer: Cesium.Viewer, container: HTMLElement): () => void {
+  let width = container.clientWidth
+  let height = container.clientHeight
+  const observer = new ResizeObserver(() => {
+    if (viewer.isDestroyed()) return
+    const nextWidth = container.clientWidth
+    const nextHeight = container.clientHeight
+    if (nextWidth === width && nextHeight === height) return
+    width = nextWidth
+    height = nextHeight
+    viewer.resize()
+  })
+  observer.observe(container)
+  return () => observer.disconnect()
+}
+
+export async function startGlobe(
+  container: HTMLElement,
+  config: ResolvedGlobe,
+  signal?: AbortSignal,
+): Promise<GlobeHandles> {
+  throwIfUnloaded(signal)
   const viewer = new Cesium.Viewer(container, {
     animation: false,
     timeline: false,
@@ -42,30 +75,72 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
     infoBox: false,
     selectionIndicator: false,
   })
+  const stopSizeWatch = watchContainerSize(viewer, container)
+  let sketch: ReturnType<typeof attachSketch> | null = null
+  let stopFrameRate: (() => void) | null = null
+  let closed = false
+  let onAbort = (): void => {}
+  const teardown = (): void => {
+    if (closed) return
+    closed = true
+    signal?.removeEventListener("abort", onAbort)
+    stopSizeWatch()
+    sketch?.dispose()
+    stopFrameRate?.()
+    if (!viewer.isDestroyed()) viewer.destroy()
+  }
+  onAbort = () => teardown()
+  signal?.addEventListener("abort", onAbort)
   const homeDestination = viewer.camera.positionWC.clone()
   const homeDirection = viewer.camera.directionWC.clone()
   const homeUp = viewer.camera.upWC.clone()
+  // 极点露出的底色。Web Mercator 在数学上就到 ±85.0511°
+  // （WebMercatorProjection.MaximumLatitude），那以外没有任何瓦片网格可铺，
+  // 于是露出 Globe 的默认底色 —— 那是 rgb(0,0,0.5) 的深蓝，在深色面板上很扎眼。
+  // 换成接近极地冰雪的浅色。OSM、Esri 这类只能到 85° 的源仍然走这条兜底；
+  // 能铺到 ±90 的 Geographic 源则不会露出这块底色。
+  try {
+  throwIfUnloaded(signal)
+  viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#eaf1f7")
   const imagery = await createLayer(config.imagery).attach(viewer)
+  throwIfUnloaded(signal)
   const terrain = await createLayer(config.terrain).attach(viewer)
+  throwIfUnloaded(signal)
   const tileset = config.tileset.url ? await createLayer(config.tileset).attach(viewer) : null
-  const sketch = attachSketch(viewer)
-  watchFrameRate(viewer)
+  throwIfUnloaded(signal)
+  const liveSketch = attachSketch(viewer)
+  sketch = liveSketch
+  const stopRate = watchFrameRate(viewer)
+  stopFrameRate = stopRate
+  viewer.resize()
   return {
     imagery,
     terrain,
     tileset,
     setSplitPosition(position: number) {
+      if (viewer.isDestroyed()) return
       viewer.scene.splitPosition = position
     },
     async mountSwipeSide(spec: LayerSpec, side: SplitSide) {
+      if (viewer.isDestroyed()) throw unloaded()
       const handle = await createLayer(spec).attach(viewer)
+      if (viewer.isDestroyed()) {
+        try {
+          handle.remove()
+        } catch {
+          // 球已经拆掉时，这一层也跟着没了。
+        }
+        throw unloaded()
+      }
       handle.setSplit(side)
       return handle
     },
     async mountLocatedImage(url, west, south, east, north) {
+      if (viewer.isDestroyed()) throw unloaded()
       const provider = await Cesium.SingleTileImageryProvider.fromUrl(url, {
         rectangle: Cesium.Rectangle.fromDegrees(west, south, east, north),
       })
+      if (viewer.isDestroyed()) throw unloaded()
       const layer = viewer.imageryLayers.addImageryProvider(provider)
       return {
         attribution: "",
@@ -73,51 +148,65 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
           layer.show = show
         },
         setOpacity(value: number) {
-          layer.alpha = value
+          layer.alpha = clampOpacity(value)
         },
         setMaximumScreenSpaceError() {},
         setSplit() {},
+        raise() {
+          viewer.imageryLayers.raise(layer)
+        },
+        lower() {
+          viewer.imageryLayers.lower(layer)
+        },
         remove() {
           viewer.imageryLayers.remove(layer, true)
         },
       }
     },
     beginSketch(kind) {
-      sketch.begin(kind)
+      if (viewer.isDestroyed()) return
+      liveSketch.begin(kind)
     },
     finishSketch() {
-      return sketch.finish()
+      if (viewer.isDestroyed()) return null
+      return liveSketch.finish()
     },
     showAnnotation(id, geometry) {
-      sketch.show(id, geometry)
+      if (viewer.isDestroyed()) return
+      liveSketch.show(id, geometry)
     },
     eraseAnnotation(id) {
-      sketch.erase(id)
+      if (viewer.isDestroyed()) return
+      liveSketch.erase(id)
     },
     clearAnnotations() {
-      sketch.eraseAll()
+      if (viewer.isDestroyed()) return
+      liveSketch.eraseAll()
     },
     clearSketch() {
-      sketch.clearDraft()
+      if (viewer.isDestroyed()) return
+      liveSketch.clearDraft()
     },
     flyTo(lon, lat, height = 1_500_000) {
+      if (viewer.isDestroyed()) return
       viewer.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(lon, lat, height),
         duration: 1.2,
       })
     },
-    flyToExtent() {
-      // 不再硬编码 (-160,-70,160,70)：那只是"大致全球"，对着一景局部影像
-      // 点"范围"会飞到完全无关的地方。改成飞到当前相机正在看的那一块；
-      // 看不到地面（相机在太空里）时才退回全球范围。
-      const visible = viewer.camera.computeViewRectangle(
-        viewer.scene.globe.ellipsoid,
-        globeRectangleScratch,
-      )
-      const destination = visible ? visible : defaultWorldRectangle(globeRectangleScratch)
+    flyToExtent(extent) {
+      if (viewer.isDestroyed()) return
+      // 点的是某一条图层时飞到它自己的范围。没有范围（底图、地形）才退回
+      // 当前视野；看不到地面时再退回全球。以前这个按钮不看图层，对着一景
+      // 局部影像也会飞到相机正看着的那一块。
+      const destination = extent
+        ? Cesium.Rectangle.fromDegrees(extent.west, extent.south, extent.east, extent.north)
+        : viewer.camera.computeViewRectangle(viewer.scene.globe.ellipsoid, globeRectangleScratch) ??
+          defaultWorldRectangle(globeRectangleScratch)
       viewer.camera.flyTo({ destination, duration: 1.2 })
     },
     flyHome() {
+      if (viewer.isDestroyed()) return
       viewer.camera.cancelFlight()
       viewer.camera.flyTo({
         destination: homeDestination,
@@ -125,6 +214,14 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
         duration: 1.2,
       })
     },
+    destroy() {
+      teardown()
+    },
+  }
+  } catch (error) {
+    teardown()
+    if (signal?.aborted) throw unloaded()
+    throw error
   }
 }
 
@@ -267,6 +364,9 @@ function attachSketch(viewer: Cesium.Viewer) {
       if (draft) viewer.entities.remove(draft)
       draft = null
     },
+    dispose() {
+      if (!handler.isDestroyed()) handler.destroy()
+    },
   }
 }
 
@@ -314,10 +414,10 @@ function entityFromGeometry(id: string, geometry: GeoGeometry): Cesium.Entity.Co
   }
 }
 
-function watchFrameRate(viewer: Cesium.Viewer): void {
+function watchFrameRate(viewer: Cesium.Viewer): () => void {
   let frames = 0
   let windowStart = performance.now()
-  viewer.scene.postRender.addEventListener(() => {
+  const tick = (): void => {
     frames += 1
     const now = performance.now()
     if (now - windowStart < 1000) return
@@ -326,5 +426,9 @@ function watchFrameRate(viewer: Cesium.Viewer): void {
     if (node) node.textContent = String(fps)
     frames = 0
     windowStart = now
-  })
+  }
+  viewer.scene.postRender.addEventListener(tick)
+  return () => {
+    if (!viewer.isDestroyed()) viewer.scene.postRender.removeEventListener(tick)
+  }
 }

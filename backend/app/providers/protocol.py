@@ -46,6 +46,13 @@ class LayerSpec:
     wmts_dimensions: dict[str, str] | None = None
     # 需要在展示时说清的重投影 / 基准差异。
     georeference_note: str = ""
+    # 非标准四叉树才填。默认 2×1、偏移 0、256px 就是 Cesium 的 Geographic 零级，
+    # 现有源不声明这四项时行为不变。GIBS 的 4326 格网从第 3 级起才是
+    # 10×5 的干净金字塔，所以要单独声明零级行列、层级偏移和瓦片像素。
+    level_zero_tiles_x: int = 2
+    level_zero_tiles_y: int = 1
+    level_offset: int = 0
+    tile_pixel_size: int = 256
 
 
 class DataSourceProvider(Protocol):

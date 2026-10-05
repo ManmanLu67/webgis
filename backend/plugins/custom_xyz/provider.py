@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime
 from typing import ClassVar
 
@@ -47,7 +48,8 @@ class CustomXyzProvider:
             raise ValueError("坐标系必须显式声明")
         when = str(raw.get("time") or "")
         url = apply_time(template, when or None)
-        item_id = f"custom-{abs(hash((name, url))) % 10**10}"
+        digest = hashlib.sha1(f"{name}\n{url}".encode()).hexdigest()[:10]
+        item_id = f"custom-{digest}"
         acquired = datetime.now(UTC)
         if when:
             try:

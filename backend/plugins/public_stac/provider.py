@@ -35,8 +35,9 @@ class PublicStacProvider:
         payload: dict = {"limit": int((filters or {}).get("limit") or 1), "bbox": list(bbox)}
         if self.collection:
             payload["collections"] = [self.collection]
-        if datetime_range and datetime_range[0] and datetime_range[1]:
-            payload["datetime"] = f"{datetime_range[0].isoformat()}/{datetime_range[1].isoformat()}"
+        interval = _stac_interval(datetime_range)
+        if interval:
+            payload["datetime"] = interval
         payload["sortby"] = [{"field": "datetime", "direction": "desc"}]
         document = self._read_json(f"{self.endpoint}/search", payload)
         items = []
@@ -111,6 +112,18 @@ class PublicStacProvider:
         )
         with self._urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode())
+
+
+def _stac_interval(datetime_range) -> str | None:
+    """单边区间也要下发。两端都空才是没给时间。"""
+    if not datetime_range:
+        return None
+    start, end = datetime_range
+    if start is None and end is None:
+        return None
+    left = start.isoformat() if start else ".."
+    right = end.isoformat() if end else ".."
+    return f"{left}/{right}"
 
 
 def _preview_href(assets: dict) -> str | None:

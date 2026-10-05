@@ -5,6 +5,8 @@ export interface ManagedLayer {
   visible: boolean
   opacity: number
   order: number
+  /** 这条图层自己的范围。没有就说明它是全球底图或地形，"范围"按钮不该假装飞到它。 */
+  extent?: { west: number; south: number; east: number; north: number }
 }
 
 export function groupLayers(layers: ManagedLayer[]): { group: string; layers: ManagedLayer[] }[] {

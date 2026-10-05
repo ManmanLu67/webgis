@@ -75,14 +75,11 @@ def load_plugins(plugins_dir: Path) -> LoadReport:
         manifest_path = path / "plugin.yaml"
         if not manifest_path.exists():
             continue
-        error = _read_manifest(path, manifest_path)
+        manifest, error = _read_manifest(path, manifest_path)
         if error is not None:
             report.errors.append(error)
             continue
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(manifest, dict):
-            report.errors.append(f"{path.name}: plugin.yaml must be a mapping")
-            continue
+        assert manifest is not None
 
         error = _validate(path, manifest)
         if error is not None:
@@ -104,13 +101,15 @@ def load_plugins(plugins_dir: Path) -> LoadReport:
     return report
 
 
-def _read_manifest(path: Path, manifest_path: Path) -> str | None:
-    """只检查能不能解析。解析结果交给调用方，避免同一份 YAML 读两遍。"""
+def _read_manifest(path: Path, manifest_path: Path) -> tuple[dict | None, str | None]:
+    """解析一次。调用方直接用返回的对象，不再把同一份 YAML 读第二遍。"""
     try:
-        yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        parsed = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        return f"{path.name}: invalid plugin.yaml ({exc})"
-    return None
+        return None, f"{path.name}: invalid plugin.yaml ({exc})"
+    if not isinstance(parsed, dict):
+        return None, f"{path.name}: plugin.yaml must be a mapping"
+    return parsed, None
 
 
 # 凭据从环境变量注入：WEBGIS_PROVIDER_SECRETS_<插件名大写>
@@ -203,7 +202,7 @@ def _validate(path: Path, manifest: dict) -> str | None:
         return f"{path.name}: availability 为 skeleton 时 status 应写 skeleton"
     # 声明能铺到地球上，就得说得出交互方式，否则界面上不知道该问什么。
     if manifest["drape"] and manifest["picker"] is None and manifest["availability"] == "ready":
-        return f"{path.name}: drape 为 true 时请声明 picker（template / extent / time）"
+        return f"{path.name}: drape 为 true 时请声明 picker（template / extent / time / recent）"
     return None
 
 

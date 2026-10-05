@@ -51,17 +51,12 @@ class WaybackProvider:
         return items[:limit]
 
     def get_layer_spec(self, item_id: str) -> LayerSpec:
-        for item in self._items:
-            if item.id == item_id:
-                return LayerSpec(
-                    id=item.id,
-                    type="xyz",
-                    url=item.asset_href,
-                    style={},
-                    time_dimension=item.acquired_at.date().isoformat(),
-                    publisher_id="wayback",
-                )
-        raise KeyError(item_id)
+        item = next((row for row in self._items if row.id == item_id), None)
+        if item is None and self._catalog is not None:
+            item = next((row for row in _releases(self._catalog) if row.id == item_id), None)
+        if item is None:
+            raise KeyError(item_id)
+        return _layer_spec(item)
 
     def ingest(self, item_id: str):
         raise NotImplementedError("历史版本是引用型数据源，不入库")
@@ -83,6 +78,17 @@ class WaybackProvider:
         self._catalog = document
         self._catalog_at = self._clock()
         return document
+
+
+def _layer_spec(item: CatalogItem) -> LayerSpec:
+    return LayerSpec(
+        id=item.id,
+        type="xyz",
+        url=item.asset_href,
+        style={},
+        time_dimension=item.acquired_at.date().isoformat(),
+        publisher_id="arcgis_wayback",
+    )
 
 
 def _releases(document: dict) -> list[CatalogItem]:

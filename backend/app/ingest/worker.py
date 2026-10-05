@@ -113,9 +113,17 @@ def run_once(
     except IntegrityError as exc:
         # COG 落在 data_dir/cog/{job.id}.tif，job id 唯一，所以这条只在
         # 同一个 job 被并发处理时才会出现——而那正是领取逻辑要防的事。
+        # 不能就地 return：领取时已经把状态写成 running，回滚后那一行还停在
+        # running，只有进程重启的 recover_interrupted 能救。这里单独提交成失败。
         session.rollback()
         logger.warning("job %s 提交时冲突，可能被并发处理：%s", job.id, exc)
-        return None
+        stuck = session.get(Job, job.id)
+        if stuck is not None and stuck.status == RUNNING:
+            stuck.status = FAILED
+            stuck.error = "提交时与并发处理冲突，任务未完成"
+            stuck.updated_at = datetime.now(UTC)
+            session.commit()
+        return stuck
     return job
 
 

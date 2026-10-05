@@ -40,7 +40,7 @@ const imageryOn = ref(true)
 const terrainOn = ref(true)
 const tilesetOn = ref(true)
 const opacity = ref(1)
-const errorText = ref(0)
+const errorText = ref(false)
 const screenError = ref(config.tileset.maximumScreenSpaceError ?? 16)
 const tilesetConfigured = config.tileset.url.length > 0
 const scenes = ref<SwipeScene[]>([...DEMO_SCENES])
@@ -89,10 +89,51 @@ let swipeRight: LayerHandle | null = null
 const jobs = ref<Job[]>([])
 // 同一时刻只跟一个任务。新一轮上传会中止上一轮，避免两个轮询同时刷状态。
 let jobPoll: AbortController | null = null
+// 开球是异步的。卸载若发生在预检或 Viewer 构造的中途，handles 还是 null，
+// 原先的 onUnmounted 什么都不销毁，WebGL 上下文留在已经拆掉的节点上，
+// 下一次挂载画出来就是一块空白。
+let globeAbort: AbortController | null = null
+const layerEpoch = new Map<string, number>()
+// 三路异步挂载各记各的代次。快速连点或卸载时，晚回来的那次不能把新图层盖掉。
+let swipeEpoch = 0
+let leftEpoch = 0
+let rightEpoch = 0
+
+function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError"
+}
+
+function safeRemove(handle: LayerHandle | null | undefined): void {
+  try {
+    handle?.remove()
+  } catch {
+    // 球已经拆掉时，图层跟着没了，不必再报一次。
+  }
+}
+
+function bumpLayer(id: string): number {
+  const next = (layerEpoch.get(id) ?? 0) + 1
+  layerEpoch.set(id, next)
+  return next
+}
 
 onUnmounted(() => {
+  swipeEpoch += 1
+  leftEpoch += 1
+  rightEpoch += 1
+  for (const id of layerEpoch.keys()) bumpLayer(id)
+  for (const handle of extraLayers.values()) safeRemove(handle)
+  extraLayers.clear()
+  safeRemove(swipeLeft)
+  safeRemove(swipeRight)
+  swipeLeft = null
+  swipeRight = null
   jobPoll?.abort()
   jobPoll = null
+  globeAbort?.abort()
+  globeAbort = null
+  handles?.destroy()
+  handles = null
 })
 
 function sceneById(id: string): SwipeScene {
@@ -102,20 +143,31 @@ function sceneById(id: string): SwipeScene {
 onMounted(async () => {
   const node = document.getElementById("cesium")
   if (!node) return
+  const controller = new AbortController()
+  globeAbort = controller
   configureCesium({ token: config.ionToken })
   try {
     // 先探底图再开球。Cesium 的 UrlTemplateImageryProvider 拉不到瓦片时**不抛异常**，
     // 所以一旦底图主机不通，地球就只是一个没有任何影像的空球，界面还什么都不说 ——
     // 表现出来就是"刷新一下地球没了"。这里先把原因捞出来。
-    const verdict = await checkBasemap({ url: config.imagery.url })
+    const verdict = await checkBasemap({ url: config.imagery.url, signal: controller.signal })
+    if (controller.signal.aborted) return
     if (!verdict.ok) basemapWarning.value = basemapFailureText(verdict)
-    handles = await startGlobe(node, config)
+    handles = await startGlobe(node, config, controller.signal)
+    if (controller.signal.aborted) {
+      handles.destroy()
+      handles = null
+      return
+    }
     attribution.value = [handles.imagery.attribution, handles.tileset?.attribution ?? ""].filter(Boolean).join(" · ")
     await loadAnnotations()
+    if (controller.signal.aborted) return
     await loadSources()
+    if (controller.signal.aborted) return
     await loadJobs()
   } catch (error) {
-    errorText.value = 1
+    if (isAbort(error) || controller.signal.aborted) return
+    errorText.value = true
     attribution.value = error instanceof Error ? error.message : "地球加载失败"
   }
 })
@@ -129,10 +181,13 @@ watch(opacity, (value) => handles?.imagery.setOpacity(value))
 watch(screenError, (value) => handles?.tileset?.setMaximumScreenSpaceError(value))
 
 watch(swipeOn, async (enabled) => {
+  const epoch = ++swipeEpoch
+  leftEpoch += 1
+  rightEpoch += 1
   if (!handles) return
   if (!enabled) {
-    swipeLeft?.remove()
-    swipeRight?.remove()
+    safeRemove(swipeLeft)
+    safeRemove(swipeRight)
     swipeLeft = null
     swipeRight = null
     // 顺手把分隔条归位。不重置的话下次打开卷帘，分隔条会停在上次拖到的位置，
@@ -148,23 +203,59 @@ watch(swipeOn, async (enabled) => {
   handles.imagery.setShow(false)
   split.value = 0.5
   handles.setSplitPosition(0.5)
-  swipeLeft = await handles.mountSwipeSide(toLayerSpec(sceneById(leftId.value)), "left")
-  swipeRight = await handles.mountSwipeSide(toLayerSpec(sceneById(rightId.value)), "right")
-  attribution.value = `${swipeLeft.attribution} · ${swipeRight.attribution}`
+  try {
+    const left = await handles.mountSwipeSide(toLayerSpec(sceneById(leftId.value)), "left")
+    const right = await handles.mountSwipeSide(toLayerSpec(sceneById(rightId.value)), "right")
+    if (epoch !== swipeEpoch || !handles) {
+      safeRemove(left)
+      safeRemove(right)
+      return
+    }
+    swipeLeft = left
+    swipeRight = right
+    attribution.value = `${left.attribution} · ${right.attribution}`
+  } catch (error) {
+    if (isAbort(error) || !handles) return
+    toolMessage.value = error instanceof Error ? error.message : "卷帘挂不上"
+  }
 })
 
 watch(leftId, async (id) => {
   if (!swipeOn.value || !handles) return
-  swipeLeft?.remove()
-  swipeLeft = await handles.mountSwipeSide(toLayerSpec(sceneById(id)), "left")
-  if (swipeRight) attribution.value = `${swipeLeft.attribution} · ${swipeRight.attribution}`
+  const epoch = ++leftEpoch
+  safeRemove(swipeLeft)
+  swipeLeft = null
+  try {
+    const next = await handles.mountSwipeSide(toLayerSpec(sceneById(id)), "left")
+    if (epoch !== leftEpoch || !swipeOn.value || !handles) {
+      safeRemove(next)
+      return
+    }
+    swipeLeft = next
+    if (swipeRight) attribution.value = `${next.attribution} · ${swipeRight.attribution}`
+  } catch (error) {
+    if (isAbort(error) || !handles) return
+    toolMessage.value = error instanceof Error ? error.message : "卷帘挂不上"
+  }
 })
 
 watch(rightId, async (id) => {
   if (!swipeOn.value || !handles) return
-  swipeRight?.remove()
-  swipeRight = await handles.mountSwipeSide(toLayerSpec(sceneById(id)), "right")
-  if (swipeLeft) attribution.value = `${swipeLeft.attribution} · ${swipeRight.attribution}`
+  const epoch = ++rightEpoch
+  safeRemove(swipeRight)
+  swipeRight = null
+  try {
+    const next = await handles.mountSwipeSide(toLayerSpec(sceneById(id)), "right")
+    if (epoch !== rightEpoch || !swipeOn.value || !handles) {
+      safeRemove(next)
+      return
+    }
+    swipeRight = next
+    if (swipeLeft) attribution.value = `${swipeLeft.attribution} · ${next.attribution}`
+  } catch (error) {
+    if (isAbort(error) || !handles) return
+    toolMessage.value = error instanceof Error ? error.message : "卷帘挂不上"
+  }
 })
 
 async function onLayerVisible(id: string, visible: boolean): Promise<void> {
@@ -177,13 +268,28 @@ async function onLayerVisible(id: string, visible: boolean): Promise<void> {
     terrainOn.value = visible
     return
   }
-  const scene = DEMO_SCENES.find((item) => item.id === id)
-  if (!scene || !handles) return
+  const epoch = bumpLayer(id)
+  if (!handles) return
+  // 编目图层和"本机用过"的图层不在 DEMO_SCENES 里，只在 extraLayers / scenes 里。
+  // 以前用 DEMO_SCENES.find 找不到就直接返回，显隐开关对它们完全无效。
   let handle = extraLayers.get(id)
   if (visible && !handle) {
-    handle = await handles.mountSwipeSide(toLayerSpec(scene), "none")
-    extraLayers.set(id, handle)
+    const scene = scenes.value.find((item) => item.id === id)
+    if (!scene) return
+    try {
+      handle = await handles.mountSwipeSide(toLayerSpec(scene), "none")
+    } catch (error) {
+      if (isAbort(error) || !handles) return
+      toolMessage.value = error instanceof Error ? error.message : "图层挂不上"
+      return
+    }
+    if (layerEpoch.get(id) !== epoch || !handles) {
+      safeRemove(handle)
+      return
+    }
+    registerExtraLayer(id, handle)
   }
+  if (layerEpoch.get(id) !== epoch) return
   handle?.setShow(visible)
 }
 
@@ -200,14 +306,42 @@ function onLayerOpacity(id: string, opacityValue: number): void {
 
 function onLayerMove(id: string, direction: "up" | "down"): void {
   managedLayers.value = moveLayer(managedLayers.value, id, direction)
+  const handle = id === "imagery" ? handles?.imagery : extraLayers.get(id)
+  if (direction === "up") handle?.raise()
+  else handle?.lower()
 }
 
 function onLayerRemove(id: string): void {
-  if (id === "imagery") handles?.imagery.setShow(false)
-  else if (id === "terrain") handles?.terrain.setShow(false)
-  else extraLayers.get(id)?.remove()
+  bumpLayer(id)
+  if (id === "imagery") {
+    handles?.imagery.setShow(false)
+    imageryOn.value = false
+  } else if (id === "terrain") {
+    handles?.terrain.setShow(false)
+    terrainOn.value = false
+  } else {
+    extraLayers.get(id)?.remove()
+  }
   extraLayers.delete(id)
   managedLayers.value = withoutLayer(managedLayers.value, id)
+}
+
+function onLayerExtent(id: string): void {
+  const layer = managedLayers.value.find((item) => item.id === id)
+  handles?.flyToExtent(layer?.extent)
+}
+
+/** 同一 id 再挂一次时先卸掉旧的，否则旧影像留在球上，Map 里只剩新句柄。 */
+function registerExtraLayer(id: string, handle: LayerHandle): void {
+  const previous = extraLayers.get(id)
+  if (previous && previous !== handle) previous.remove()
+  extraLayers.set(id, handle)
+}
+
+function upsertManaged(row: ManagedLayer): void {
+  const existing = managedLayers.value.find((layer) => layer.id === row.id)
+  const next = existing ? { ...row, order: existing.order } : row
+  managedLayers.value = [...managedLayers.value.filter((layer) => layer.id !== row.id), next]
 }
 
 function onSketch(kind: SketchKind): void {
@@ -350,10 +484,17 @@ function onUseBookmark(bookmark: Bookmark): void {
   handles?.flyTo(bookmark.lon, bookmark.lat, bookmark.height)
 }
 
-async function onLoadSource(payload: { id: string; name: string; datetime?: string; bbox?: number[] }): Promise<void> {
-  const body: { limit: number; datetime?: string; bbox?: number[] } = { limit: 1 }
+async function onLoadSource(payload: {
+  id: string
+  name: string
+  datetime?: string
+  bbox?: number[]
+  product?: string
+}): Promise<void> {
+  const body: { limit: number; datetime?: string; bbox?: number[]; product?: string } = { limit: 1 }
   if (payload.datetime) body.datetime = payload.datetime
   if (payload.bbox) body.bbox = payload.bbox
+  if (payload.product) body.product = payload.product
   try {
     const items = await searchProvider(payload.id, body)
     if (!items.length) {
@@ -363,10 +504,20 @@ async function onLoadSource(payload: { id: string; name: string; datetime?: stri
     for (const item of items) {
       await placeLoadedItem(payload.id, payload.name, item)
     }
+    if (!handles) return
     toolMessage.value = `已加载 ${items.length} 条`
   } catch (error) {
+    if (isAbort(error) || !handles) return
     toolMessage.value = error instanceof Error ? error.message : "目录未连接"
   }
+}
+
+function extentOf(bbox?: number[]): ManagedLayer["extent"] {
+  if (!bbox || bbox.length !== 4) return undefined
+  const [west, south, east, north] = bbox
+  if ([west, south, east, north].some((value) => typeof value !== "number" || Number.isNaN(value))) return undefined
+  if (west >= east || south >= north) return undefined
+  return { west, south, east, north }
 }
 
 function layerName(item: { title: string; time?: string }): string {
@@ -386,35 +537,45 @@ async function placeLoadedItem(
   let handle: LayerHandle
   // 后端声明了什么类型就用什么类型：xyz 是瓦片模板、wmts 读 capabilities 或
   // KVP 基地址、cog 是单幅影像。不再一律当 XYZ 模板套，那样 WMTS 是假挂载。
+  const spec = toMountableLayer(wire, item.id)
   const declaredType = wire.type
-  if (declaredType === "wmts" && (wire.wmts_capabilities || wire.wmts_layer)) {
-    handle = await handles.mountSwipeSide(toMountableLayer(wire, item.id), "none")
-    if (!scenes.value.some((scene) => scene.id === item.id)) {
-      scenes.value = [
-        ...scenes.value,
-        { id: item.id, source: sourceId === "arcgis_wayback" ? "wayback" : "stac", timeLabel: item.title, url, attribution },
-      ]
+  const tileUrl = /\{(z|gibsLevel|TileMatrix)\}/.test(url)
+  if ((declaredType === "wmts" && (wire.wmts_capabilities || wire.wmts_layer)) || tileUrl) {
+    handle = await handles.mountSwipeSide(spec, "none")
+    if (!handles) {
+      safeRemove(handle)
+      return
     }
-  } else if (url.includes("{z}") || url.includes("{TileMatrix}")) {
-    handle = await handles.mountSwipeSide(toMountableLayer(wire, item.id), "none")
-    if (!scenes.value.some((scene) => scene.id === item.id)) {
-      scenes.value = [
-        ...scenes.value,
-        { id: item.id, source: sourceId === "arcgis_wayback" ? "wayback" : "stac", timeLabel: item.title, url, attribution },
-      ]
+    const scene: SwipeScene = {
+      id: item.id,
+      source: sourceId === "arcgis_wayback" ? "wayback" : "stac",
+      timeLabel: item.title,
+      url,
+      attribution,
+      spec,
     }
+    scenes.value = [...scenes.value.filter((row) => row.id !== item.id), scene]
   } else if (item.bbox && item.bbox.length === 4 && /\.(png|jpe?g)(\?|$)/i.test(url)) {
     const [west, south, east, north] = item.bbox
     handle = await handles.mountLocatedImage(url, west, south, east, north)
+    if (!handles) {
+      safeRemove(handle)
+      return
+    }
   } else {
     toolMessage.value = `${item.title} 已写入目录。该结果不是可直接铺到地球的瓦片。`
     return
   }
-  extraLayers.set(item.id, handle)
-  managedLayers.value = [
-    ...managedLayers.value,
-    { id: item.id, name: layerName(item), group: groupName, visible: true, opacity: 1, order: 300 + managedLayers.value.length },
-  ]
+  registerExtraLayer(item.id, handle)
+  upsertManaged({
+    id: item.id,
+    name: layerName(item),
+    group: groupName,
+    visible: true,
+    opacity: 1,
+    order: 300 + managedLayers.value.length,
+    extent: extentOf(item.bbox),
+  })
   // 记进"本机用过的图层"，历史版本源下次就能直接从这里回到这一景，不必再检索。
   recentLayers.value = rememberLayer(recentLayers.value, {
     sourceId,
@@ -437,27 +598,38 @@ async function placeLoadedItem(
 async function onUseRecentLayer(entry: RecentLayer): Promise<void> {
   if (!handles) return
   try {
-    const handle = await handles.mountSwipeSide(
-      { ...toMountableLayer(entry.layer, entry.id), attribution: entry.attribution },
-      "none",
-    )
-    extraLayers.set(entry.id, handle)
-    managedLayers.value = [
-      ...managedLayers.value,
+    const spec = { ...toMountableLayer(entry.layer, entry.id), attribution: entry.attribution }
+    const handle = await handles.mountSwipeSide(spec, "none")
+    if (!handles) {
+      safeRemove(handle)
+      return
+    }
+    registerExtraLayer(entry.id, handle)
+    scenes.value = [
+      ...scenes.value.filter((row) => row.id !== entry.id),
       {
         id: entry.id,
-        name: entry.time ? `${entry.title} ${entry.time}` : entry.title,
-        group: "本机用过",
-        visible: true,
-        opacity: 1,
-        order: 400 + managedLayers.value.length,
+        source: entry.sourceId === "arcgis_wayback" ? "wayback" : "stac",
+        timeLabel: entry.title,
+        url: spec.url,
+        attribution: entry.attribution,
+        spec,
       },
     ]
+    upsertManaged({
+      id: entry.id,
+      name: entry.time ? `${entry.title} ${entry.time}` : entry.title,
+      group: "本机用过",
+      visible: true,
+      opacity: 1,
+      order: 400 + managedLayers.value.length,
+    })
     // 重新选中也要把它顶到最前，否则"最近用过"的排序会失真
     recentLayers.value = rememberLayer(recentLayers.value, entry)
     writeRecentLayers(recentLayers.value)
     toolMessage.value = `已重新挂上 ${entry.title}`
   } catch (error) {
+    if (isAbort(error) || !handles) return
     toolMessage.value = error instanceof Error ? error.message : "这个图层挂不上了"
   }
 }
@@ -482,20 +654,22 @@ async function onCustomXyz(template: {
       },
       "none",
     )
-    extraLayers.set(item.id, handle)
-    managedLayers.value = [
-      ...managedLayers.value,
-      {
-        id: item.id,
-        name: item.title,
-        group: "自定义 XYZ",
-        visible: true,
-        opacity: 1,
-        order: 200 + managedLayers.value.length,
-      },
-    ]
+    if (!handles) {
+      safeRemove(handle)
+      return
+    }
+    registerExtraLayer(item.id, handle)
+    upsertManaged({
+      id: item.id,
+      name: item.title,
+      group: "自定义 XYZ",
+      visible: true,
+      opacity: 1,
+      order: 200 + managedLayers.value.length,
+    })
     toolMessage.value = `已添加 ${item.title}`
-  } catch {
+  } catch (error) {
+    if (isAbort(error) || !handles) return
     toolMessage.value = "目录未连接，自定义地址未添加"
   }
 }
@@ -512,6 +686,7 @@ async function loadSources(): Promise<void> {
 async function loadAnnotations(): Promise<void> {
   try {
     const features = await listAnnotations()
+    if (!handles) return
     const loaded: AnnotationRow[] = []
     for (const feature of features) {
       const geometry = asGeoGeometry(feature.geometry)
@@ -549,22 +724,24 @@ async function onUploadCog(payload: { file: File; acquiredAt: string }): Promise
 
 async function watchJob(jobId: string): Promise<void> {
   if (jobPoll) jobPoll.abort()
-  jobPoll = new AbortController()
+  const controller = new AbortController()
+  jobPoll = controller
   try {
     const finished = await pollJob(jobId, readJob, {
-      signal: jobPoll.signal,
+      signal: controller.signal,
       onUpdate: upsertJob,
     })
+    if (controller.signal.aborted || !handles) return
     if (finished.status === "success") {
       await mountIngested(finished.payload.item_id ?? finished.id)
     } else if (finished.status === "failed") {
       toolMessage.value = finished.error ? `入库失败：${finished.error}` : "入库失败"
     }
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") return
+    if (isAbort(error) || controller.signal.aborted) return
     toolMessage.value = error instanceof Error ? error.message : "入库状态未知"
   } finally {
-    jobPoll = null
+    if (jobPoll === controller) jobPoll = null
   }
 }
 
@@ -582,20 +759,22 @@ async function mountIngested(itemId: string): Promise<void> {
       toMountableLayer(wire, itemId),
       "none",
     )
-    extraLayers.set(itemId, handle)
-    managedLayers.value = [
-      ...managedLayers.value,
-      {
-        id: itemId,
-        name: `上传 ${itemId.slice(0, 8)}`,
-        group: "本地入库",
-        visible: true,
-        opacity: 1,
-        order: 100 + managedLayers.value.length,
-      },
-    ]
+    if (!handles) {
+      safeRemove(handle)
+      return
+    }
+    registerExtraLayer(itemId, handle)
+    upsertManaged({
+      id: itemId,
+      name: `上传 ${itemId.slice(0, 8)}`,
+      group: "本地入库",
+      visible: true,
+      opacity: 1,
+      order: 100 + managedLayers.value.length,
+    })
     toolMessage.value = "入库完成，图层已挂上地球"
   } catch (error) {
+    if (isAbort(error) || !handles) return
     toolMessage.value = error instanceof Error ? error.message : "取图层描述失败"
   }
 }
@@ -717,7 +896,7 @@ function startDrag(event: PointerEvent): void {
       @copy="onCopy"
       @home="handles?.flyHome()"
       @fly="onFly"
-      @fly-extent="handles?.flyToExtent()"
+      @fly-extent="onLayerExtent"
       @save-bookmark="onSaveBookmark"
       @use-bookmark="onUseBookmark"
     />
@@ -729,12 +908,19 @@ function startDrag(event: PointerEvent): void {
 html,
 body,
 #app,
-.shell,
-#cesium {
+.shell {
   margin: 0;
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+.shell {
+  position: relative;
+  background: #071018;
+}
+#cesium {
+  position: absolute;
+  inset: 0;
 }
 .cesium-viewer-bottom,
 .cesium-widget-credits {
@@ -746,7 +932,8 @@ body,
   bottom: 8px;
   z-index: 2;
   margin: 0;
-  color: rgba(255, 255, 255, 0.72);
+  color: rgba(255, 255, 255, 0.86);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
   font: 11px/1.3 "Segoe UI", sans-serif;
 }
 .error {

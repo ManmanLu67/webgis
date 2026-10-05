@@ -52,6 +52,8 @@ def search_items(
     bbox: tuple[float, float, float, float] | None = None,
     datetime_range: tuple[datetime | None, datetime | None] | None = None,
     cloud_cover_lt: float | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[Item]:
     statement = (
         select(Item)
@@ -68,7 +70,13 @@ def search_items(
         if start is not None:
             statement = statement.where(Item.acquired_at >= start)
         if end is not None:
-            statement = statement.where(Item.acquired_at <= end)
+            # 左闭右开，与数据源检索的上界一致：结束时刻本身不属于这一段。
+            statement = statement.where(Item.acquired_at < end)
     if cloud_cover_lt is not None:
+        # 云量未知（NULL）不算"低于阈值"。调用方要的是已知且更晴的景。
         statement = statement.where(Item.cloud_cover.is_not(None), Item.cloud_cover < cloud_cover_lt)
+    if offset:
+        statement = statement.offset(max(offset, 0))
+    if limit is not None:
+        statement = statement.limit(max(limit, 0))
     return list(session.scalars(statement))
