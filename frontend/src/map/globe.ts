@@ -45,12 +45,6 @@ export async function startGlobe(container: HTMLElement, config: ResolvedGlobe):
   const homeDestination = viewer.camera.positionWC.clone()
   const homeDirection = viewer.camera.directionWC.clone()
   const homeUp = viewer.camera.upWC.clone()
-  // 极点露出的底色。Web Mercator 在数学上就到 ±85.0511°
-  // （WebMercatorProjection.MaximumLatitude），那以外没有任何瓦片网格可铺，
-  // 于是露出 Globe 的默认底色 —— 那是 rgb(0,0,0.5) 的深蓝，在深色面板上很扎眼。
-  // 换成接近极地冰雪的浅色，与影像里的白色冰盖连成一片。
-  // 这不是 GIBS 特有的问题：默认的 OSM 底图同样覆盖不到极点。
-  viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#eaf1f7")
   const imagery = await createLayer(config.imagery).attach(viewer)
   const terrain = await createLayer(config.terrain).attach(viewer)
   const tileset = config.tileset.url ? await createLayer(config.tileset).attach(viewer) : null

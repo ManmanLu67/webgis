@@ -9,9 +9,9 @@ cache_allowed: false
 status: implemented
 availability: ready
 drape: true
-picker: time
-# 这个源的"时间"其实是"历史版本"，挑版本正是它存在的意义，
-# 所以要给一个可选列表，而不是只给最近一条。
-time_choices: list
+picker: recent
+# 这个源有 196 个历史版本，把日期摊开让人挑既慢又没意义 ——
+# 它的价值就是"回到以前看过的那一景"，所以走本机用过的图层。
+# 自选时间留给 GIBS、公开 STAC 这类每日更新的源。
 catalog_url: https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json
 entrypoint: provider:WaybackProvider

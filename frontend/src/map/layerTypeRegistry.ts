@@ -2,19 +2,6 @@ export const LAYER_TYPES = ["wmts", "xyz", "cog", "terrain", "3dtiles"] as const
 
 export type LayerType = (typeof LAYER_TYPES)[number]
 
-/**
- * 瓦片网格上真正有数据的矩形（度）。
- *
- * 与"数据基准"无关：这里说的是**网格**的哪一部分有像素。网格本身总是整张
- * Web Mercator，但有些源只覆盖其中一部分，其余格子返回不透明的纯黑图。
- */
-export interface Coverage {
-  west: number
-  south: number
-  east: number
-  north: number
-}
-
 export interface LayerSpec {
   id: string
   type: LayerType
@@ -48,8 +35,6 @@ export interface LayerSpec {
   wmtsDimensions?: Record<string, string>
   /** 需要在界面上说清的重投影 / 基准差异。 */
   georeferenceNote?: string
-  /** 只覆盖网格的一部分时声明，让 Cesium 不去请求必然是空洞的格子。 */
-  coverage?: Coverage
 }
 
 export type SplitSide = "left" | "right" | "none"

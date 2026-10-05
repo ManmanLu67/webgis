@@ -69,13 +69,6 @@
 | attribution | 字符串，默认空。展示署名 |
 | wmts_* | 真 WMTS 的两种编码，见契约 |
 | georeference_note | 字符串，默认空。需要说清的重投影或基准差异 |
-| coverage_bbox | 四元数组 `[西, 南, 东, 北]`（度），可空，默认 `null` |
-
-`coverage_bbox` 值得单独说明：有些源只覆盖瓦片网格的一部分，其余格子返回
-**不透明**的纯黑 no-data 图（GIBS 的 MODIS 真彩色只到 ±85°，而网格是整张 Web Mercator）。
-不声明的话 Cesium 会照常去请求那些格子，表现为地球上的一块块黑洞。
-声明后前端给 Cesium 传 `rectangle`，它根本不去要那些瓦片。
-`null` 表示整张网格都有数据，前端据此不裁剪。
 
 ## 关系
 

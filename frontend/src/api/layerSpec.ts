@@ -1,4 +1,4 @@
-import { LAYER_TYPES, type Coverage, type LayerSpec, type LayerType } from "../map/layerTypeRegistry"
+import { LAYER_TYPES, type LayerSpec, type LayerType } from "../map/layerTypeRegistry"
 
 /**
  * 后端 `LayerSpec` 的线上形状。字段名是 snake_case，前端用的是 camelCase，
@@ -25,7 +25,6 @@ export interface WireLayerSpec {
   wmts_format?: string
   wmts_dimensions?: Record<string, string> | null
   georeference_note?: string
-  coverage_bbox?: number[] | null
   variants?: string[]
 }
 
@@ -43,26 +42,6 @@ function asStringMap(value: unknown): Record<string, string> | undefined {
     typeof pair[1] === "string",
   )
   return entries.length ? Object.fromEntries(entries) : undefined
-}
-
-/**
- * 瓦片网格上真正有数据的范围。
- *
- * 有些源只覆盖一部分网格，其余格子返回**不透明**的纯黑 no-data 图。不裁剪的话
- * Cesium 照常请求那些格子，用户看到的是地球上一块块黑洞。裁成矩形后 Cesium 根本
- * 不去要那些瓦片。
- *
- * 四元组沿用仓库既有的 bbox 约定：`[西, 南, 东, 北]`。长度不对就当没声明 ——
- * 宁可不去裁剪，也不要拿一个错的矩形把该显示的地方也切掉。
- */
-function asCoverage(value: unknown): Coverage | undefined {
-  if (!Array.isArray(value) || value.length !== 4) return undefined
-  const [west, south, east, north] = value
-  if (![west, south, east, north].every((n) => typeof n === "number" && Number.isFinite(n))) {
-    return undefined
-  }
-  if (west >= east || south >= north) return undefined
-  return { west, south, east, north }
 }
 
 /**
@@ -87,8 +66,6 @@ export function toMountableLayer(wire: WireLayerSpec, fallbackId: string): Layer
   if (wire.url_template) spec.urlTemplate = wire.url_template
   if (wire.crs) spec.crs = wire.crs
   if (wire.georeference_note) spec.georeferenceNote = wire.georeference_note
-  const coverage = asCoverage(wire.coverage_bbox)
-  if (coverage) spec.coverage = coverage
   if (wire.wmts_capabilities) spec.wmtsCapabilities = wire.wmts_capabilities
   if (wire.wmts_layer) spec.wmtsLayer = wire.wmts_layer
   if (wire.wmts_tile_template) spec.wmtsTileTemplate = wire.wmts_tile_template

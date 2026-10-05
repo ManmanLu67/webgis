@@ -43,15 +43,14 @@ REQUIRED_FIELDS = (
 MODES = {"reference", "ingest"}
 STATUSES = {"implemented", "skeleton"}
 AVAILABILITIES = {"ready", "needs_config", "skeleton"}
-# picker: None=无需交互, template=填地址模板, extent=填地图范围, time=选时间
-PICKERS = {None, "template", "extent", "time"}
-# time_choices: latest=只给最近一条, list=给一个可选列表
+# picker: None=无需交互, template=填地址模板, extent=填地图范围,
+#         time=选时间, recent=从本机用过的图层里选
 #
-# 默认 latest，因为界面上的主路径就是"最近一景"（见 docs/SPEC.md §8「添加图层」）。
-# 只有时间本身就是用户要挑的东西时才需要 list —— 目前只有历史版本源属于这一类：
-# 对它来说"选时间"其实是"选版本"，只剩一条就等于把这个源废了。
-TIME_CHOICES = {"latest", "list"}
-DEFAULT_TIME_CHOICES = "latest"
+# time 与 recent 的分工：time 是"这个源有时相，要挑一个"，入口是自选日期加最近一景，
+# 留给 GIBS、公开 STAC 这类每日更新的源；recent 是"这个源不用挑时间，用回自己上次
+# 用过的图层就行"，历史版本源属于这一类 —— 它有 196 个历史版本，把日期列表摊开
+# 让人挑既慢又没意义。
+PICKERS = {None, "template", "extent", "time", "recent"}
 
 
 @dataclass
@@ -196,11 +195,6 @@ def _validate(path: Path, manifest: dict) -> str | None:
     if manifest["picker"] not in PICKERS:
         options = "、".join(sorted(str(item) for item in PICKERS))
         return f"{path.name}: invalid picker {manifest['picker']!r}，可选：{options}"
-    # 选时间时才需要说清楚给几条；其它交互方式下这个字段没有意义。
-    time_choices = manifest.get("time_choices", DEFAULT_TIME_CHOICES)
-    if manifest["picker"] == "time" and time_choices not in TIME_CHOICES:
-        options = "、".join(sorted(TIME_CHOICES))
-        return f"{path.name}: invalid time_choices {time_choices!r}，可选：{options}"
     if not isinstance(manifest["drape"], bool):
         return f"{path.name}: drape must be true or false, got {manifest['drape']!r}"
     if manifest["status"] == "skeleton" and manifest["availability"] != "skeleton":

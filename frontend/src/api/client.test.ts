@@ -124,14 +124,11 @@ describe("检索请求的范围参数", () => {
     expect(sentBody(calls[0]).bbox).toEqual([116, 39, 117, 40])
   })
 
-  it("默认只取一条，列几条由调用方按数据源决定", async () => {
-    // 选时间只是确认取哪一景，主路径就是最近一景，所以默认 1 而不是一堆
+  it("只取最近一景：选时间只是确认取哪一景", async () => {
     const { calls } = stubFetch({ items: [] })
     const { loadTimes } = await import("./client")
     await loadTimes("gibs")
     expect(sentBody(calls[0]).limit).toBe(1)
-    await loadTimes("arcgis_wayback", undefined, 12)
-    expect(sentBody(calls[1]).limit).toBe(12)
   })
 })
 

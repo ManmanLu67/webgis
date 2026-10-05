@@ -78,9 +78,7 @@ export interface CatalogSource {
   enabled: boolean
   availability: string
   drape: boolean
-  picker: "template" | "extent" | "time" | null
-  /** 选时间时给几条：`latest` 只给最近一条，`list` 给一个可选列表。 */
-  time_choices: "latest" | "list" | null
+  picker: "template" | "extent" | "time" | "recent" | null
   license_note: string
 }
 
@@ -113,18 +111,17 @@ export async function searchProvider(
 }
 
 /**
- * 取某个源的可选时相。
+ * 取某个源的最近一景。
  *
- * `limit` 由调用方按数据源的 `time_choices` 决定：只要最近一景就传 1，
- * 需要让用户挑版本才传更大的值。放在参数里而不是写死在这里，
- * 是因为"给几条"是数据源自己的性质（见 `plugin.yaml` 的 `time_choices`）。
+ * 只取一条：选时间这一步只是确认"取哪一景"，而主路径本来就是最近一景，列一长串
+ * 反而让人以为要挑。真要指定别的日期，用 ToolsPanel 里的自选日期入口。
+ * 不需要挑时间的源走 `picker: recent`，压根不进这一步。
  */
 export async function loadTimes(
   providerId: string,
   bbox?: number[],
-  limit = 1,
 ): Promise<{ id: string; title: string; time: string }[]> {
-  const items = await searchProvider(providerId, { limit, bbox })
+  const items = await searchProvider(providerId, { limit: 1, bbox })
   return items.map((item) => ({ id: item.id, title: item.title, time: item.time }))
 }
 

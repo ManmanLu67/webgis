@@ -25,6 +25,13 @@ import { DEMO_SCENES, splitFromPointer, toLayerSpec, type SwipeScene } from "./m
 import type { LayerHandle } from "./map/layerTypeRegistry"
 import { addBookmark, coordinateError, readBookmarks, writeBookmarks, type Bookmark } from "./map/bookmarks"
 import { moveLayer, withoutLayer, type ManagedLayer } from "./map/layers"
+import { basemapFailureText, checkBasemap } from "./map/basemapCheck"
+import {
+  readRecentLayers,
+  rememberLayer,
+  writeRecentLayers,
+  type RecentLayer,
+} from "./map/recentLayers"
 import ToolsPanel from "./ToolsPanel.vue"
 
 const config = resolveGlobeConfig(import.meta.env)
@@ -50,6 +57,8 @@ const flyLat = ref(40)
 const bookmarkName = ref("北京")
 const annotations = ref<AnnotationRow[]>([])
 const sources = ref<CatalogSource[]>([])
+const recentLayers = ref<RecentLayer[]>(readRecentLayers())
+const basemapWarning = ref("")
 const xyzName = ref("")
 const xyzUrl = ref("")
 const xyzScheme = ref("WebMercator")
@@ -95,6 +104,11 @@ onMounted(async () => {
   if (!node) return
   configureCesium({ token: config.ionToken })
   try {
+    // 先探底图再开球。Cesium 的 UrlTemplateImageryProvider 拉不到瓦片时**不抛异常**，
+    // 所以一旦底图主机不通，地球就只是一个没有任何影像的空球，界面还什么都不说 ——
+    // 表现出来就是"刷新一下地球没了"。这里先把原因捞出来。
+    const verdict = await checkBasemap({ url: config.imagery.url })
+    if (!verdict.ok) basemapWarning.value = basemapFailureText(verdict)
     handles = await startGlobe(node, config)
     attribution.value = [handles.imagery.attribution, handles.tileset?.attribution ?? ""].filter(Boolean).join(" · ")
     await loadAnnotations()
@@ -401,6 +415,51 @@ async function placeLoadedItem(
     ...managedLayers.value,
     { id: item.id, name: layerName(item), group: groupName, visible: true, opacity: 1, order: 300 + managedLayers.value.length },
   ]
+  // 记进"本机用过的图层"，历史版本源下次就能直接从这里回到这一景，不必再检索。
+  recentLayers.value = rememberLayer(recentLayers.value, {
+    sourceId,
+    id: item.id,
+    title: item.title,
+    time: item.time ?? "",
+    attribution,
+    layer: wire,
+  })
+  writeRecentLayers(recentLayers.value)
+}
+
+/**
+ * 重放一条"本机用过的图层"。
+ *
+ * 刻意**不**回后端检索：存的就是完整图层描述，直接挂即可。历史版本源的清单一有
+ * 196 条，每次检索都要下载（现在有缓存，但首次仍要等），而"回到刚才那一景"本该
+ * 是瞬时的。署名也照存的说，宪章 C4 要求展示时必须带。
+ */
+async function onUseRecentLayer(entry: RecentLayer): Promise<void> {
+  if (!handles) return
+  try {
+    const handle = await handles.mountSwipeSide(
+      { ...toMountableLayer(entry.layer, entry.id), attribution: entry.attribution },
+      "none",
+    )
+    extraLayers.set(entry.id, handle)
+    managedLayers.value = [
+      ...managedLayers.value,
+      {
+        id: entry.id,
+        name: entry.time ? `${entry.title} ${entry.time}` : entry.title,
+        group: "本机用过",
+        visible: true,
+        opacity: 1,
+        order: 400 + managedLayers.value.length,
+      },
+    ]
+    // 重新选中也要把它顶到最前，否则"最近用过"的排序会失真
+    recentLayers.value = rememberLayer(recentLayers.value, entry)
+    writeRecentLayers(recentLayers.value)
+    toolMessage.value = `已重新挂上 ${entry.title}`
+  } catch (error) {
+    toolMessage.value = error instanceof Error ? error.message : "这个图层挂不上了"
+  }
 }
 
 async function onCustomXyz(template: {
@@ -629,6 +688,8 @@ function startDrag(event: PointerEvent): void {
       :annotation-count="annotations.length"
       :bookmarks="bookmarks"
       :sources="sources"
+      :recent-layers="recentLayers"
+      :basemap-warning="basemapWarning"
       :jobs="jobs"
       v-model:xyz-name="xyzName"
       v-model:xyz-url="xyzUrl"
@@ -638,6 +699,7 @@ function startDrag(event: PointerEvent): void {
       v-model:xyz-time="xyzTime"
       @custom-xyz="onCustomXyz"
       @load-source="onLoadSource"
+      @use-recent-layer="onUseRecentLayer"
       @upload-cog="onUploadCog"
       @refresh-jobs="loadJobs"
       @cancel-job="onCancelJob"

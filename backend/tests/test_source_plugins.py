@@ -3,7 +3,6 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from app.providers.protocol import LayerSpec
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,6 +110,50 @@ def test_wayback_uses_only_listed_tile_urls():
     assert "{z}" in items[0].asset_href
 
 
+def test_wayback_catalog_is_fetched_once_and_reused():
+    """清单要缓存，否则打开一次选源弹层要下载两次。
+
+    实测清单约 0.1 MB、下载一秒多；而打开弹层会先问"最近哪一景"、确认后再按日期取，
+    两次 search 各自重新拉一遍就成了这个源明显变慢的原因。时钟注入，不真的等 TTL。
+    """
+    calls = []
+
+    def urlopen(request, timeout=0):
+        calls.append(request.full_url)
+        return _Body({"200": {"itemId": "200", "itemTitle": "2014-02-20", "tileUrl": "u/{z}/{y}/{x}"}})
+
+    now = [1000.0]
+    provider = _provider("arcgis_wayback", "WaybackProvider")(
+        urlopen=urlopen, clock=lambda: now[0]
+    )
+    provider.authenticate({"catalog_url": "https://example.invalid/wayback.json", "credentials": []})
+
+    provider.search(None, None, {"fetch": True, "limit": 1})
+    provider.search(None, None, {"fetch": True, "limit": 1})
+    assert len(calls) == 1, calls
+
+    # 过 TTL 之后要重新拉，否则历史版本新增了永远看不到
+    now[0] += 3601.0
+    provider.search(None, None, {"fetch": True, "limit": 1})
+    assert len(calls) == 2, calls
+
+
+def test_wayback_reuses_the_cache_across_different_dates():
+    """按日期取也要命中同一份缓存 —— 那正是弹层确认时的那第二次 search。"""
+    calls = []
+
+    def urlopen(request, timeout=0):
+        calls.append(request.full_url)
+        return _Body({"200": {"itemId": "200", "itemTitle": "2014-02-20", "tileUrl": "u/{z}/{y}/{x}"}})
+
+    provider = _provider("arcgis_wayback", "WaybackProvider")(urlopen=urlopen, clock=lambda: 0.0)
+    provider.authenticate({"catalog_url": "https://example.invalid/wayback.json", "credentials": []})
+    provider.search(None, None, {"fetch": True, "limit": 1})
+    day = datetime(2014, 2, 20, tzinfo=UTC)
+    provider.search(None, (day, day + timedelta(days=1)), {"fetch": True, "limit": 1})
+    assert len(calls) == 1, calls
+
+
 def test_skeleton_search_explains_itself():
     provider = _provider("jilin1", "Jilin1Provider")()
     try:
@@ -177,46 +220,28 @@ def test_a_present_bbox_still_has_to_have_four_numbers(build_app):
         assert "范围需要四个数" in bad.json()["detail"]
 
 
-def test_gibs_declares_the_area_where_it_actually_has_pixels(build_app):
-    """GIBS 只到 ±85°，网格却是整张 Web Mercator。
+def test_gibs_layer_has_no_coverage_field(build_app):
+    """图层描述里没有覆盖范围字段了。
 
-    不声明覆盖范围的话，Cesium 会去请求 ±85° 以外的格子，而 GIBS 在那里返回
-    整块**不透明**纯黑图（实测 9/0/0 四点全 rgb(0,0,0)），表现为极地一圈黑环。
+    曾经加过 `coverage_bbox` 用来裁掉 GIBS 在 ±85° 以外的纯黑 no-data 瓦片，
+    后来撤回 —— 所以这里钉住"没有这个字段"，免得以后当成漏删。
     """
     client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
     day = (datetime.now(UTC).date() - timedelta(days=6)).isoformat()
     found = client.post("/providers/gibs/search", json={"datetime": day, "limit": 1})
-    layer = found.json()["items"][0]["layer"]
-    assert layer["coverage_bbox"] == [-180.0, -85.0, 180.0, 85.0]
+    assert "coverage_bbox" not in found.json()["items"][0]["layer"]
 
 
-def test_coverage_bbox_defaults_to_none_which_means_the_whole_grid():
-    """默认 None = 整张网格都有数据，前端据此不去裁剪。
+def test_history_source_asks_for_used_layers_not_for_a_time(build_app):
+    """历史版本不选时间，走"本机用过的图层"。
 
-    这里刻意不查网络：Wayback 之类的源会去拉真实清单，测试不该依赖外网。
-    """
-    spec = LayerSpec(
-        id="x",
-        type="xyz",
-        url="https://example.invalid/{z}/{x}/{y}.png",
-        style={},
-        time_dimension=None,
-        publisher_id="x",
-    )
-    assert spec.coverage_bbox is None
-
-
-def test_time_choices_separates_latest_only_sources_from_version_pickers(build_app):
-    """只有"时间本身就是用户要挑的东西"的源才给列表。
-
-    GIBS 与公开目录的"选时间"只是确认取哪一景，默认就是最近一景，给 12 条
-    反而让人以为要挑；历史版本的"时间"是"版本"，只剩一条就把这个源废了。
+    它的清单有 196 个历史版本，摊成日期列表既慢又没意义；而"回到以前看过的那一景"
+    才是这个源的用途。选时相的入口留给 GIBS、公开 STAC 这类每日更新的源。
     """
     client = TestClient(build_app(plugins_dir=ROOT / "plugins"))
     listed = {row["id"]: row for row in client.get("/providers").json()}
-    assert listed["gibs"]["time_choices"] == "latest"
-    assert listed["public_stac"]["time_choices"] == "latest"
-    assert listed["arcgis_wayback"]["time_choices"] == "list"
-    # 进不了弹层的源不需要这个字段，给 null 让前端不必判断
-    assert listed["local_file"]["time_choices"] is None
-    assert listed["jilin1"]["time_choices"] is None
+    assert listed["arcgis_wayback"]["picker"] == "recent"
+    assert listed["gibs"]["picker"] == "time"
+    assert listed["public_stac"]["picker"] == "extent"
+    # 不选时间的源不该带任何时间相关字段
+    assert "time_choices" not in listed["arcgis_wayback"]

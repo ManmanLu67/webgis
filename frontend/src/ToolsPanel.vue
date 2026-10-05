@@ -6,9 +6,9 @@ import type { Bookmark } from "./map/bookmarks"
 import { layerPickerSources } from "./map/drapeSources"
 import { parseLayerDate } from "./map/layerDate"
 import { groupLayers, type ManagedLayer } from "./map/layers"
+import { RECENT_VISIBLE, type RecentLayer } from "./map/recentLayers"
 import type { SketchKind } from "./map/sketchKind"
 import { sceneOptionLabel, type SwipeScene } from "./map/swipe"
-import { timeChoiceLimit } from "./map/timeChoices"
 
 type TimeChoice = { id: string; title: string; time: string }
 
@@ -18,6 +18,8 @@ const props = defineProps<{
   measureText: string
   bookmarks: Bookmark[]
   sources: CatalogSource[]
+  recentLayers: RecentLayer[]
+  basemapWarning: string
   scenes: SwipeScene[]
   tilesetConfigured: boolean
   sketching: boolean
@@ -45,6 +47,7 @@ const emit = defineEmits<{
   useBookmark: [bookmark: Bookmark]
   customXyz: [template: { name: string; url_template: string; tiling_scheme: string; max_zoom: number; layer_kind: string; time: string }]
   loadSource: [payload: { id: string; name: string; datetime?: string; bbox?: number[] }]
+  useRecentLayer: [entry: RecentLayer]
   uploadCog: [payload: { file: File; acquiredAt: string }]
   refreshJobs: []
   cancelJob: [jobId: string]
@@ -74,11 +77,14 @@ const openSection = ref("view")
 const openGroup = ref<string | null>(null)
 const selectedLayer = ref<string | null>(null)
 const pickerOpen = ref(false)
-const pickerStep = ref<"sources" | "extent" | "time" | "template">("sources")
+const pickerStep = ref<"sources" | "extent" | "time" | "template" | "recent">("sources")
 const picked = ref<CatalogSource | null>(null)
 const times = ref<TimeChoice[]>([])
 const selectedTime = ref("")
 const pickerError = ref("")
+const recentExpanded = ref(false)
+/** `recent` 源在本机没有任何记录时，从目录取来的那一景的日期。用完即弃。 */
+const seedTime = ref("")
 const west = ref("")
 const south = ref("")
 const east = ref("")
@@ -156,6 +162,8 @@ function resetPicker(): void {
   selectedTime.value = ""
   customDate.value = ""
   pickerError.value = ""
+  recentExpanded.value = false
+  seedTime.value = ""
 }
 
 function openPicker(): void {
@@ -182,8 +190,11 @@ function extentBbox(): number[] | null {
 }
 
 /**
- * 这个源该列出多少个时相。判断依据来自后端的 `time_choices`，
- * 规则本身在 `timeChoices.ts` 里（有单测）。
+ * 走哪一步。
+ *
+ * `recent` 不问时间：这个源的清单很杂，摊成日期列表让人挑既慢又没意义，
+ * "回到以前看过的那一景"才是它的用途，所以直接列出本机用过的图层。
+ * 其余按 `picker` 走 —— 判断依据全部来自后端声明，前端不认插件 id。
  */
 async function chooseSource(source: CatalogSource): Promise<void> {
   picked.value = source
@@ -196,20 +207,64 @@ async function chooseSource(source: CatalogSource): Promise<void> {
     pickerStep.value = "extent"
     return
   }
+  if (source.picker === "recent") {
+    recentExpanded.value = false
+    pickerStep.value = "recent"
+    // 本机一条都没有时给个垫底：拉一次目录最近的一景，否则这个源在
+    // 新浏览器上永远没有入口（没有历史就没有入口，没有入口就产生不了历史）。
+    if (!recentOfSource.value.length) {
+      await loadTimes()
+      return
+    }
+    return
+  }
   await loadTimes()
+}
+
+/** 本机用过的、属于当前这个源的图层。 */
+const recentOfSource = computed(() => {
+  const id = picked.value?.id
+  return id ? props.recentLayers.filter((row) => row.sourceId === id) : []
+})
+
+/** 展开前只给 3 条，其余按「展开」放出来。 */
+const visibleRecent = computed(() =>
+  recentExpanded.value ? recentOfSource.value : recentOfSource.value.slice(0, RECENT_VISIBLE),
+)
+
+/** 用掉那景垫底：走正常的检索挂载路径，这样它也会被记进本机记录。 */
+function useSeed(): void {
+  if (!picked.value || !seedTime.value) return
+  emit("loadSource", { id: picked.value.id, name: picked.value.name, datetime: seedTime.value })
+  pickerOpen.value = false
+  resetPicker()
 }
 
 async function loadTimes(): Promise<void> {
   if (!picked.value) return
+  const source = picked.value
   // 没有范围就是 undefined，不要拿 [] 顶上：空数组会被当成"给了范围但长度不对"。
-  const bbox = picked.value.picker === "extent" ? (extentBbox() ?? undefined) : undefined
-  if (picked.value.picker === "extent" && !bbox) {
+  const bbox = source.picker === "extent" ? (extentBbox() ?? undefined) : undefined
+  if (source.picker === "extent" && !bbox) {
     pickerError.value = "公开目录检索需要范围"
     return
   }
   pickerError.value = ""
   try {
-    const found = await fetchTimes(picked.value.id, bbox, timeChoiceLimit(picked.value))
+    // `recent` 只在完全没有本机记录时借道目录一次，拿最近一景当垫底。
+    // 之后这个源就走本机记录，不再碰网络。
+    if (source.picker === "recent") {
+      const found = await fetchTimes(source.id, bbox)
+      seedTime.value = found[0]?.time ?? ""
+      if (!found.length) {
+        seedTime.value = ""
+        pickerError.value = "目录里也没有可用的历史影像"
+        return
+      }
+      pickerStep.value = "recent"
+      return
+    }
+    const found = await fetchTimes(source.id, bbox)
     times.value = found
     selectedTime.value = found[0]?.time ?? ""
     if (!found.length) {
@@ -316,6 +371,7 @@ function submitCustom(): void {
       </button>
 
       <div v-if="openSection === section.id" class="body">
+        <p v-if="basemapWarning" class="hint warn">{{ basemapWarning }}</p>
         <template v-if="section.id === 'view'">
           <label class="check"><input v-model="imageryOn" type="checkbox" /> 影像</label>
           <label class="field">透明度 <input v-model.number="opacity" type="range" min="0" max="1" step="0.05" /></label>
@@ -363,6 +419,40 @@ function submitCustom(): void {
                 <button type="button" class="primary" @click="loadTimes">检索时间</button>
                 <button type="button" @click="pickerStep = 'sources'">返回</button>
               </div>
+            </template>
+            <template v-else-if="pickerStep === 'recent'">
+              <p class="muted">{{ picked?.name }}：本机用过的图层</p>
+              <template v-if="recentOfSource.length">
+                <ul class="source-list">
+                  <li v-for="row in visibleRecent" :key="`${row.sourceId}:${row.id}`">
+                    <button type="button" class="link" @click="emit('useRecentLayer', row)">
+                      {{ row.time ? `${row.title} ${row.time}` : row.title }}
+                    </button>
+                  </li>
+                </ul>
+                <div class="actions">
+                  <button
+                    v-if="recentOfSource.length > RECENT_VISIBLE"
+                    type="button"
+                    @click="recentExpanded = !recentExpanded"
+                  >
+                    {{ recentExpanded ? "收起" : `展开其余 ${recentOfSource.length - RECENT_VISIBLE} 条` }}
+                  </button>
+                  <button type="button" @click="pickerStep = 'sources'">返回</button>
+                </div>
+              </template>
+              <template v-else-if="seedTime">
+                <p class="hint">本机还没有用过的历史影像，先给你目录里最近的一景。</p>
+                <ul class="source-list">
+                  <li>
+                    <button type="button" class="link" @click="useSeed">最近 · {{ seedTime }}</button>
+                  </li>
+                </ul>
+                <div class="actions">
+                  <button type="button" @click="pickerStep = 'sources'">返回</button>
+                </div>
+              </template>
+              <p v-else class="hint">还没有可用的历史影像。</p>
             </template>
             <template v-else-if="pickerStep === 'time'">
               <p class="muted">{{ picked?.name }}</p>
@@ -677,6 +767,12 @@ button:disabled {
 }
 .muted, .hint { margin: 0; color: #8ea0ab; }
 .hint { margin-top: 8px; color: #f3ddaa; }
+/* 底图不可达这类问题要显眼：它会让地球变成一个空球，而 Cesium 自己不会报错 */
+.hint.warn {
+  color: #ffb4b4;
+  border-left: 2px solid #ffb4b4;
+  padding-left: 8px;
+}
 .result { margin: 0; font-variant-numeric: tabular-nums; }
 /* 任务状态按语义着色，失败要一眼能看出来 */
 .job { color: #cfdbe2; font-size: 13px; }

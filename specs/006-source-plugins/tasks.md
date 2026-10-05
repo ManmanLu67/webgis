@@ -47,11 +47,22 @@
 - [x] T022 [US2] 在 `frontend/src/map/globe.ts` 把 `globe.baseColor` 改成接近冰雪的浅色，修掉极点露出的默认深蓝
 - [x] T023 [P] [US1] 补测试：`coverage_bbox` 端到端、`time_choices` 默认与枚举、`toMountableLayer` 的矩形收窄、`loadTimes` 的 limit
 
+## 阶段 6：本机用过的图层与底图可见性
+
+- [x] T016 [US1] 在 `backend/app/plugins/loader.py` 的 `PICKERS` 增加 `recent`，`arcgis_wayback` 改声明 `picker: recent`，契约枚举同步
+- [x] T017 [US2] 在 `WaybackProvider` 给清单加进程内缓存（TTL 一小时，时钟可注入），并由注入的 `urlopen` 断言两次检索只发一次请求
+- [x] T018 [US2] 新增 `frontend/src/map/recentLayers.ts`：本机记录、去重、封顶 20、损坏数据不炸，并配单测
+- [x] T019 [US2] 在 `App.vue` 挂载成功后写入记录；再次选用直接用存下的描述挂载，不回后端
+- [x] T020 [US2] 在 `ToolsPanel.vue` 按 `picker === "recent"` 分支：不出现日期与自选日期，首屏 3 条 + 展开
+- [x] T021 [US2] 本机无记录时借道目录取最近一景作垫底，避免新浏览器上该源没有入口
+- [x] T022 [US3] 新增 `frontend/src/map/basemapCheck.ts`：启动前探测底图主机，连不上就写明主机与原因
+- [x] T023 [US3] 在 `App.vue` 接入预检，警告显示在面板顶部
+
 ## 依赖
 
 T001 → T002 → T004。T005 与 T006 可并行。T007 依赖两者的检索行为。T008 依赖 T005 和 T006。
 T011 → T012。T013 与 T011 各自独立，但两侧都要改才不会复发。
-T016 → T018。T019 依赖 T018 的字段。T020 与 T021 必须成对，否则裁剪不生效。T022 与 T021 一起才好看。
+T016 → T020。T017 独立于前端。T018 → T019 → T020。T022 → T023。
 
 ## 实现策略
 
@@ -60,4 +71,5 @@ T016 → T018。T019 依赖 T018 的字段。T020 与 T021 必须成对，否则
 - 2026-09-28：`tests/test_source_plugins.py` 与 `tests/test_plugins.py` 通过。样例检索不访问外网。默认公开目录地址未在本机对官方服务做实时检索。
 - 2026-09-28：选源收到「图层」弹层。弹层只留能铺上地球的可用源。已挂上的图层行仍做显隐、透明度和删除。接口仍返回可用、需配置、未实现。
 - 2026-10-04：`picker: time` 的源（GIBS、Wayback）在界面上被后端 400 挡住，实际不可用；根因是前端发 `bbox: []`、后端把空数组判成「长度不对」。两侧都改并加了回归测试，见 `docs/SPEC.md` §13 第 12 条。
-- 2026-10-05：时间列表默认只列一条（历史版本源保留列表，手填日期上移为主要入口）；新增 `coverage_bbox` 修掉极地黑环，并调 `globe.baseColor` 修掉极点深蓝圆 —— 见 §13 第 14、15 条。Cesium 层的效果仍需浏览器目视，本仓库无 Cesium mock。
+- 2026-10-05（撤回）：曾加 `time_choices` 与 `coverage_bbox`、并把 `globe.baseColor` 改浅，三项均按用户要求撤回；见 §13 第 16 条。
+- 2026-10-05：历史版本改走 `picker: recent`（本机用过的图层，3 条起、可展开、无日期选择），清单加缓存解决打开慢；底图加启动预检解决「刷新地球没了」——见 §13 第 17、18 条。Cesium 层效果仍需浏览器目视，本仓库无 Cesium mock。

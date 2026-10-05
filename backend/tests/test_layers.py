@@ -27,7 +27,6 @@ FIELDS = {
     "wmts_format",
     "wmts_dimensions",
     "georeference_note",
-    "coverage_bbox",
     "variants",
 }
 

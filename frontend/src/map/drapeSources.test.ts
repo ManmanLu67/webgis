@@ -12,7 +12,6 @@ function source(overrides: Partial<CatalogSource> & { id: string }): CatalogSour
     availability: "ready",
     drape: false,
     picker: null,
-    time_choices: null,
     license_note: "",
     ...overrides,
   }

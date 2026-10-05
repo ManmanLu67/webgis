@@ -46,14 +46,6 @@ class LayerSpec:
     wmts_dimensions: dict[str, str] | None = None
     # 需要在展示时说清的重投影 / 基准差异。
     georeference_note: str = ""
-    # 瓦片网格上真正有数据的范围 [西, 南, 东, 北]（度）。
-    #
-    # 为什么需要它：有些源只覆盖一部分网格，其余格子返回的是**不透明**的纯黑
-    # no-data 图（GIBS 的 MODIS 真彩色就是如此，且只到 ±85°）。不裁剪的话，
-    # Cesium 会照常请求那些格子，用户看到的是地球上一块块黑洞。这里声明出来，
-    # 前端据此给 Cesium 传 `rectangle`，让它根本不去要那些瓦片。
-    # None 表示整个网格都有数据。
-    coverage_bbox: list[float] | None = None
 
 
 class DataSourceProvider(Protocol):

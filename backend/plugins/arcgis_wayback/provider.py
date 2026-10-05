@@ -1,10 +1,16 @@
 import json
 import re
+import time
 import urllib.request
 from datetime import UTC, datetime
 from typing import ClassVar
 
 from app.providers.protocol import CatalogItem, LayerSpec
+
+# 清单缓存多久。清单本身不大（实测约 0.1 MB / 196 条），但一次下载要一秒多，
+# 而打开一次选源弹层会触发两次 search（先问"最近哪一景"，确认后再按日期取），
+# 所以每次都重新拉会让这个源明显变慢。一小时足够 —— 历史版本清单不是分钟级变化的。
+CATALOG_TTL_SECONDS = 3600.0
 
 
 class WaybackProvider:
@@ -12,10 +18,14 @@ class WaybackProvider:
     capabilities: ClassVar[set[str]] = {"search", "temporal"}
     availability = "ready"
 
-    def __init__(self, urlopen=None) -> None:
+    def __init__(self, urlopen=None, clock=time.monotonic) -> None:
         self._urlopen = urlopen or urllib.request.urlopen
+        self._clock = clock
         self.catalog_url = ""
         self._items: list[CatalogItem] = []
+        self._catalog: dict | None = None
+        self._catalog_at = 0.0
+        self._ttl = CATALOG_TTL_SECONDS
 
     def authenticate(self, config: dict) -> None:
         self.catalog_url = str(config.get("catalog_url") or "")
@@ -57,9 +67,22 @@ class WaybackProvider:
         raise NotImplementedError("历史版本是引用型数据源，不入库")
 
     def _read_json(self, url: str) -> dict:
+        """取清单，带进程内缓存。
+
+        缓存的是**解析后的 JSON 对象**，不是原始字节 —— `_releases` 要遍历全部记录，
+        而一次 search 只要排序后的前几条，但遍历本身得先有一份完整的文档。
+
+        时钟可注入，这样测试不用真的等一小时。
+        """
+        fresh_enough = self._catalog is not None and (self._clock() - self._catalog_at) < self._ttl
+        if fresh_enough and self._catalog is not None:
+            return self._catalog
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
         with self._urlopen(request, timeout=20) as response:
-            return json.loads(response.read().decode())
+            document = json.loads(response.read().decode())
+        self._catalog = document
+        self._catalog_at = self._clock()
+        return document
 
 
 def _releases(document: dict) -> list[CatalogItem]:
